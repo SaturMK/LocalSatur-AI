@@ -1,0 +1,137 @@
+{
+    "name": "localforge",
+    "publisher": "localforge",
+    "displayName": "LocalSatur AI",
+    "description": "A local-first AI coding agent for VS Code, powered entirely by Ollama. Chat with your agent, inspect and modify code, run commands, test changes, and solve development tasks locally.",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.137.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "localforge.helloWorld",
+                "title": "Hello World"
+            },
+            {
+                "command": "localforge.testOllama",
+                "title": "LocalSatur AI: Test Ollama"
+            },
+            {
+                "command": "localforge.openChat",
+                "title": "LocalSatur AI: Open Chat"
+            },
+            {
+                "command": "localforge.inspectWorkspace",
+                "title": "LocalSatur AI: Inspect Workspace"
+            },
+            {
+                "command": "localforge.debugEditor",
+                "title": "LocalSatur AI: Debug Editor"
+            },
+            {
+                "command": "localforge.applyEdit",
+                "title": "LocalSatur AI: Apply Edit"
+            },
+            {
+                "command": "localforge.rejectEdit",
+                "title": "LocalSatur AI: Reject Edit"
+            }
+        ],
+        "viewsContainers": {
+            "secondarySidebar": [
+                {
+                    "id": "localforge",
+                    "title": "LocalSatur AI",
+                    "icon": "$(hubot)"
+                }
+            ]
+        },
+        "views": {
+            "localforge": [
+                {
+                    "id": "localforge.chatView",
+                    "name": "LocalSatur AI",
+                    "type": "webview"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "LocalSatur AI",
+            "properties": {
+                "localforge.provider": {
+                    "type": "string",
+                    "default": "ollama",
+                    "description": "AI provider used by LocalSatur AI."
+                },
+                "localforge.ollama.host": {
+                    "type": "string",
+                    "default": "http://localhost:11434",
+                    "description": "Ollama server URL used by LocalSatur AI."
+                },
+                "localforge.ollama.model": {
+                    "type": "string",
+                    "default": "qwen3:8b-16k",
+                    "description": "Ollama model used by the LocalSatur AI agent."
+                },
+                "localforge.ollama.temperature": {
+                    "type": "number",
+                    "default": 0.2,
+                    "minimum": 0,
+                    "maximum": 2,
+                    "description": "Temperature used for Ollama responses."
+                },
+                "localforge.ollama.contextLength": {
+                    "type": "number",
+                    "default": 16384,
+                    "minimum": 1024,
+                    "description": "Maximum context length requested from Ollama."
+                },
+                "localforge.agent.maxIterations": {
+                    "type": "number",
+                    "default": 8,
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum number of agent iterations per request."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run package",
+        "compile": "npm run check-types && npm run lint && node esbuild.js",
+        "watch": "npm-run-all -p watch:*",
+        "watch:esbuild": "node esbuild.js --watch",
+        "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+        "package": "npm run check-types && npm run lint && node esbuild.js --production",
+        "compile-tests": "tsc -p . --outDir out",
+        "watch-tests": "tsc -p . -w --outDir out",
+        "pretest": "npm run compile-tests && npm run compile && npm run lint",
+        "check-types": "tsc --noEmit",
+        "lint": "eslint src",
+        "test": "vscode-test"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.137.0",
+        "@types/mocha": "^10.0.10",
+        "@types/node": "24.x",
+        "typescript-eslint": "^8.61.1",
+        "eslint": "^10.5.0",
+        "esbuild": "^0.28.1",
+        "npm-run-all": "^4.1.5",
+        "typescript": "^6.0.3",
+        "@vscode/test-cli": "^0.0.15",
+        "@vscode/test-electron": "^3.0.0"
+    },
+    "overrides": {
+        "diff": "^8.0.4",
+        "serialize-javascript": "^7.0.4"
+    }
+}
+
+
