@@ -13,6 +13,7 @@ import { AIProviderManager } from '../providers/manager';
 import { ToolManager } from '../agent/tools';
 import { WorkspaceTools } from '../tools/workspace';
 import { VSCodeContextTools } from '../tools/vscode-context';
+import { renderMarkdown } from '../webview/markdown';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -153,6 +154,47 @@ suite('Extension Test Suite', () => {
 			fs.rmSync(workspaceRoot, { recursive: true, force: true });
 			fs.rmSync(backupDirectory, { recursive: true, force: true });
 		}
+	});
+
+	test('Markdown renderer escapes HTML injection before applying markup', async () => {
+				const output = renderMarkdown('<script>alert(1)</script> and <img src=x onerror=alert(2)>');
+
+		assert.ok(!output.includes('<script'), 'script tag must not survive rendering');
+		assert.ok(!output.includes('<img'), 'img tag must not survive rendering');
+		assert.ok(output.includes('&lt;script&gt;'));
+	});
+
+	test('Markdown renderer supports headings, emphasis, lists and code blocks', async () => {
+				const output = renderMarkdown(
+			'## Title\n\n**bold** and *italic* and `code`\n\n- one\n- two\n\n1. first\n2. second\n\n```ts\nconst x = 1;\n```'
+		);
+
+		assert.ok(output.includes('<h2>Title</h2>'));
+		assert.ok(output.includes('<strong>bold</strong>'));
+		assert.ok(output.includes('<em>italic</em>'));
+		assert.ok(output.includes('<code class="inline-code">code</code>'));
+		assert.ok(output.includes('<ul><li>one</li><li>two</li></ul>'));
+		assert.ok(output.includes('<ol><li>first</li><li>second</li></ol>'));
+		assert.ok(output.includes('data-language="ts"'));
+		assert.ok(output.includes('const x = 1;'));
+	});
+
+	test('Markdown renderer allows only safe link schemes', async () => {
+				const safe = renderMarkdown('[site](https://example.com)');
+		assert.ok(safe.includes('href="https://example.com"'));
+
+		const dangerous = renderMarkdown('[x](javascript:alert(1)) and [y](file:///etc/passwd)');
+		assert.ok(!dangerous.includes('href="javascript:'));
+		assert.ok(!dangerous.includes('href="file:'));
+	});
+
+	test('Markdown renderer closes unterminated code fences (streaming)', async () => {
+				const output = renderMarkdown('text before\n\n```python\nprint("hi")');
+
+		assert.ok(output.includes('data-language="python"'));
+		assert.ok(output.includes('print(&quot;hi&quot;)'));
+		// No unbalanced markup: the fence is closed implicitly at EOF.
+		assert.strictEqual(output.split('<pre').length, output.split('</pre>').length);
 	});
 
 	test('OpenAI-compatible provider uses the configured output token limit', async () => {
@@ -383,3 +425,4 @@ suite('Extension Test Suite', () => {
 		}
 	});
 });
+

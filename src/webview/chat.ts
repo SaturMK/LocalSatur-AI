@@ -14,7 +14,8 @@
  */
 
 export function getChatHtml(
-    nonce: string
+    nonce: string,
+    markdownScriptUri: string
 ): string {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -491,6 +492,71 @@ export function getChatHtml(
             padding: 3px 8px;
 
             font-size: 10px;
+        }
+
+        /* =========================================
+           MARKDOWN CONTENT (PRD 7.3, FR-008)
+           ========================================= */
+
+        .message-body p {
+            margin: 0 0 var(--space-2);
+        }
+
+        .message-body h1,
+        .message-body h2,
+        .message-body h3,
+        .message-body h4,
+        .message-body h5,
+        .message-body h6 {
+            margin: var(--space-3) 0 var(--space-2);
+            font-weight: 700;
+        }
+
+        .message-body h1 { font-size: 16px; }
+        .message-body h2 { font-size: 15px; }
+        .message-body h3 { font-size: 14px; }
+        .message-body h4,
+        .message-body h5,
+        .message-body h6 { font-size: 13px; }
+
+        .message-body ul,
+        .message-body ol {
+            margin: 0 0 var(--space-2);
+            padding-left: 20px;
+        }
+
+        .message-body li {
+            margin: 2px 0;
+        }
+
+        .message-body blockquote {
+            margin: var(--space-2) 0;
+            padding: var(--space-1) var(--space-3);
+
+            border-left: 3px solid var(--border);
+            color: var(--muted);
+        }
+
+        .message-body a {
+            color: var(--bright);
+        }
+
+        .inline-code {
+            padding: 1px 5px;
+
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: #0C0F13;
+
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        .message-body hr {
+            margin: var(--space-3) 0;
+
+            border: none;
+            border-top: 1px solid var(--border);
         }
 
         /* =========================================
@@ -1242,6 +1308,7 @@ export function getChatHtml(
 
     </div>
 
+    <script nonce="${nonce}" src="${markdownScriptUri}"></script>
     <script nonce="${nonce}">
 
         const vscode = acquireVsCodeApi();
@@ -1343,7 +1410,7 @@ export function getChatHtml(
             return element.querySelector(".message-body");
         }
 
-        function appendAssistantContent(element, content) {
+        function appendAssistantContentFallback(element, content) {
             const fenceMarker = String.fromCharCode(96).repeat(3);
             const fence = new RegExp(
                 fenceMarker + "([a-zA-Z0-9_+-]*)?\\\\n?([\\\\s\\\\S]*?)" + fenceMarker,
@@ -1391,6 +1458,42 @@ export function getChatHtml(
                 text.textContent = content.slice(cursor);
                 element.appendChild(text);
             }
+        }
+
+        function attachCopyButtons(element) {
+            element.querySelectorAll("pre.code-block").forEach(block => {
+                const language = block.getAttribute("data-language") || "code";
+                const code = block.querySelector("code");
+                const codeContent = code ? code.textContent : "";
+
+                const copy = document.createElement("button");
+                copy.className = "copy-code";
+                copy.type = "button";
+                copy.textContent = "Copy " + language;
+                copy.addEventListener("click", async () => {
+                    try {
+                        await navigator.clipboard.writeText(codeContent);
+                        copy.textContent = "Copied";
+                    } catch {
+                        copy.textContent = "Copy unavailable";
+                    }
+                });
+
+                block.insertBefore(copy, block.firstChild);
+            });
+        }
+
+        function appendAssistantContent(element, content) {
+            const renderer = window.localforgeMarkdown;
+
+            if (renderer && typeof renderer.renderMarkdown === "function") {
+                // The renderer escapes all input before emitting markup.
+                element.innerHTML = renderer.renderMarkdown(content);
+                attachCopyButtons(element);
+                return;
+            }
+
+            appendAssistantContentFallback(element, content);
         }
 
         function addMessage(role, content) {
@@ -2301,7 +2404,10 @@ export function getChatHtml(
                 const chunk = typeof message.content === "string" ? message.content : "";
 
                 streamingAssistantContent += chunk;
-                messageBody(streamingAssistantElement).textContent = streamingAssistantContent;
+                appendAssistantContent(
+                    messageBody(streamingAssistantElement),
+                    streamingAssistantContent
+                );
 
                 messages.scrollTop = messages.scrollHeight;
                 setStatus("Generating...");

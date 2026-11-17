@@ -24,7 +24,7 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
-	const ctx = await esbuild.context({
+	const extensionConfig = {
 		entryPoints: [
 			'src/extension.ts'
 		],
@@ -41,12 +41,37 @@ async function main() {
 			/* add to the end of plugins array */
 			esbuildProblemMatcherPlugin,
 		],
-	});
+	};
+
+	// Webview bundle: Markdown renderer exposed as `localforgeMarkdown`.
+	const webviewConfig = {
+		entryPoints: [
+			'src/webview/markdown.ts'
+		],
+		bundle: true,
+		format: 'iife',
+		globalName: 'localforgeMarkdown',
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outfile: 'dist/webview-markdown.js',
+		logLevel: 'silent',
+		plugins: [
+			esbuildProblemMatcherPlugin,
+		],
+	};
+
+	const contexts = await Promise.all([
+		esbuild.context(extensionConfig),
+		esbuild.context(webviewConfig),
+	]);
+
 	if (watch) {
-		await ctx.watch();
+		await Promise.all(contexts.map(context => context.watch()));
 	} else {
-		await ctx.rebuild();
-		await ctx.dispose();
+		await Promise.all(contexts.map(context => context.rebuild()));
+		await Promise.all(contexts.map(context => context.dispose()));
 	}
 }
 

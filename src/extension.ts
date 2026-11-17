@@ -964,8 +964,16 @@ class LocalForgeChatViewProvider
 
         const nonce = randomUUID().replace(/-/g, "");
 
+        const markdownScriptUri = panel.webview.asWebviewUri(
+            vscode.Uri.joinPath(
+                this.context.extensionUri,
+                "dist",
+                "webview-markdown.js"
+            )
+        ).toString();
+
         panel.webview.html =
-            getChatHtml(nonce);
+            getChatHtml(nonce, markdownScriptUri);
 
     // =========================================================
     // WEBVIEW MESSAGES
