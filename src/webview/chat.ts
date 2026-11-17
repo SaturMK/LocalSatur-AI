@@ -644,6 +644,105 @@ export function getChatHtml(
         }
 
         /* =========================================
+           PLAN CARDS (PRD FR-010)
+           ========================================= */
+
+        .plan-card {
+            margin: var(--space-3) 0;
+            padding: var(--space-3) var(--space-4);
+
+            border: 1px solid rgba(69, 232, 121, 0.45);
+            border-radius: var(--radius-card);
+            background: var(--card);
+
+            max-width: 92%;
+        }
+
+        .plan-title {
+            font-weight: 700;
+            margin-bottom: 4px;
+            color: var(--success);
+        }
+
+        .plan-summary {
+            font-size: 13px;
+            color: var(--text);
+            margin-bottom: var(--space-3);
+        }
+
+        .plan-steps {
+            list-style: none;
+            margin: 0 0 var(--space-2);
+            padding: 0;
+
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-2);
+        }
+
+        .plan-step {
+            display: flex;
+            gap: var(--space-2);
+            align-items: baseline;
+        }
+
+        .plan-step-number {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .plan-step-title {
+            font-size: 13px;
+        }
+
+        .plan-action-chip {
+            padding: 1px 7px;
+
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .plan-action-chip.action-create { color: var(--success); border-color: rgba(69, 232, 121, 0.5); }
+        .plan-action-chip.action-edit { color: var(--bright); border-color: rgba(21, 157, 255, 0.5); }
+        .plan-action-chip.action-delete { color: var(--danger); border-color: rgba(255, 86, 86, 0.5); }
+
+        .plan-files {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-1) var(--space-2);
+            margin-top: 2px;
+        }
+
+        .plan-file {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--muted);
+            overflow-wrap: anywhere;
+        }
+
+        .plan-risks {
+            margin: var(--space-2) 0;
+            padding-left: 18px;
+
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .plan-card .buttons {
+            display: flex;
+            gap: var(--space-2);
+            flex-wrap: wrap;
+            margin-top: var(--space-2);
+        }
+
+        /* =========================================
            COMPOSER (PRD 7.7, FR-009/010)
            ========================================= */
 
@@ -1656,6 +1755,130 @@ export function getChatHtml(
         }
 
         // =========================================
+        // PLAN CARDS (PRD FR-010)
+        // =========================================
+
+        function addPlanCard(plan) {
+            if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
+                return;
+            }
+
+            const wrapper = document.createElement("div");
+            wrapper.className = "plan-card";
+
+            const title = document.createElement("div");
+            title.className = "plan-title";
+            title.textContent = "Implementation Plan";
+
+            wrapper.appendChild(title);
+
+            if (plan.summary) {
+                const summary = document.createElement("div");
+                summary.className = "plan-summary";
+                summary.textContent = plan.summary;
+                wrapper.appendChild(summary);
+            }
+
+            const steps = document.createElement("ol");
+            steps.className = "plan-steps";
+
+            plan.steps.forEach((step, stepIndex) => {
+                const item = document.createElement("li");
+                item.className = "plan-step";
+
+                const number = document.createElement("span");
+                number.className = "plan-step-number";
+                number.textContent = String(stepIndex + 1) + ".";
+                item.appendChild(number);
+
+                const content = document.createElement("span");
+
+                const titleSpan = document.createElement("span");
+                titleSpan.className = "plan-step-title";
+                titleSpan.textContent = step.title;
+                content.appendChild(titleSpan);
+
+                const chip = document.createElement("span");
+                chip.className = "plan-action-chip action-" + (step.action || "other");
+                chip.textContent = step.action || "other";
+                content.appendChild(chip);
+
+                if (Array.isArray(step.files) && step.files.length > 0) {
+                    const files = document.createElement("div");
+                    files.className = "plan-files";
+
+                    step.files.forEach(file => {
+                        const fileLabel = document.createElement("span");
+                        fileLabel.className = "plan-file";
+                        fileLabel.textContent = file;
+                        files.appendChild(fileLabel);
+                    });
+
+                    content.appendChild(files);
+                }
+
+                item.appendChild(content);
+                steps.appendChild(item);
+            });
+
+            wrapper.appendChild(steps);
+
+            if (Array.isArray(plan.risks) && plan.risks.length > 0) {
+                const risks = document.createElement("ul");
+                risks.className = "plan-risks";
+
+                plan.risks.forEach(risk => {
+                    const riskItem = document.createElement("li");
+                    riskItem.textContent = risk;
+                    risks.appendChild(riskItem);
+                });
+
+                wrapper.appendChild(risks);
+            }
+
+            const buttons = document.createElement("div");
+            buttons.className = "buttons";
+
+            const execute = document.createElement("button");
+            execute.className = "primary";
+            execute.textContent = "Execute in Agent mode";
+            execute.addEventListener("click", () => {
+                // Real run state: the composer send button is disabled while a request is active.
+                if (sendButton.disabled) {
+                    return;
+                }
+
+                const prompt = [
+                    "Execute this plan step by step:",
+                    "",
+                    plan.summary ? plan.summary : "",
+                    "",
+                    ...plan.steps.map(
+                        (step, index) =>
+                            (index + 1) + ". " + step.title +
+                            (Array.isArray(step.files) && step.files.length > 0
+                                ? " (files: " + step.files.join(", ") + ")"
+                                : "")
+                    ),
+                    "",
+                    "Inspect the affected files first, then make the changes. Validate the result before finishing."
+                ].filter(part => part !== "").join("\n");
+
+                modeSelect.value = "agent";
+                syncModeTabs();
+                modeSelect.dispatchEvent(new Event("change"));
+
+                submitChat(prompt, "agent", [], "Execute plan: " + (plan.summary || "implementation steps"));
+            });
+
+            buttons.appendChild(execute);
+            wrapper.appendChild(buttons);
+
+            messages.appendChild(wrapper);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // =========================================
         // ATTACHMENTS (PRD 7.7, FR-009)
         // =========================================
 
@@ -2209,12 +2432,18 @@ export function getChatHtml(
                     ? "Attached file: " + attachments[0].name
                     : "Attached " + attachments.length + " files");
 
+            const mode = modeSelect.value;
+
+            input.value = "";
+
+            submitChat(content, mode, attachments, displayContent);
+        }
+
+        function submitChat(rawContent, mode, attachments, displayContent) {
             addMessage("user", displayContent);
 
             streamingAssistantElement = null;
             streamingAssistantContent = "";
-
-            input.value = "";
 
             selectedAttachments = [];
             renderAttachments();
@@ -2224,8 +2453,8 @@ export function getChatHtml(
 
             vscode.postMessage({
                 type: "chat",
-                mode: modeSelect.value,
-                content: content,
+                mode: mode,
+                content: rawContent,
                 attachments: attachments
             });
         }
@@ -2431,6 +2660,11 @@ export function getChatHtml(
 
                 setStatus("Completed");
                 setRunning(false);
+                return;
+            }
+
+            if (message.type === "plan") {
+                addPlanCard(message.plan);
                 return;
             }
 

@@ -1542,6 +1542,13 @@ class LocalForgeChatViewProvider
                                     result.steps
                             });
 
+                            if (result.plan) {
+                                panel.webview.postMessage({
+                                    type: "plan",
+                                    plan: result.plan
+                                });
+                            }
+
                             // =====================================
                             // EDIT PROPOSALS
                             // =====================================

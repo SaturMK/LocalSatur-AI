@@ -14,6 +14,7 @@ import { ToolManager } from '../agent/tools';
 import { WorkspaceTools } from '../tools/workspace';
 import { VSCodeContextTools } from '../tools/vscode-context';
 import { renderMarkdown } from '../webview/markdown';
+import { extractPlan } from '../agent/plan';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -195,6 +196,63 @@ suite('Extension Test Suite', () => {
 		assert.ok(output.includes('print(&quot;hi&quot;)'));
 		// No unbalanced markup: the fence is closed implicitly at EOF.
 		assert.strictEqual(output.split('<pre').length, output.split('</pre>').length);
+	});
+
+	test('Plan mode extracts structured plan entities from the plan block', async () => {
+				const response = [
+			'## Approach',
+			'',
+			'We will refactor the provider layer.',
+			'',
+			'```localforge-plan',
+			JSON.stringify({
+				summary: 'Refactor provider layer',
+				steps: [
+					{ title: 'Split provider interface', files: ['src/providers/types.ts'], action: 'edit' },
+					{ title: 'Add unit tests', files: ['src/test/providers.test.ts'], action: 'create' }
+				],
+				risks: ['Breaking change for custom providers']
+			}),
+			'```'
+		].join('\n');
+
+		const result = extractPlan(response);
+
+		assert.ok(result.plan, 'valid plan block must produce a plan');
+		assert.strictEqual(result.plan.summary, 'Refactor provider layer');
+		assert.strictEqual(result.plan.steps.length, 2);
+		assert.strictEqual(result.plan.steps[0].action, 'edit');
+		assert.deepStrictEqual(result.plan.steps[0].files, ['src/providers/types.ts']);
+		assert.deepStrictEqual(result.plan.risks, ['Breaking change for custom providers']);
+
+		// The block is stripped from the displayed content.
+		assert.ok(!result.content.includes('localforge-plan'));
+		assert.ok(result.content.includes('## Approach'));
+	});
+
+	test('Plan mode leaves malformed or missing plan blocks untouched', async () => {
+				// No block at all.
+		const noBlock = extractPlan('Just a plain answer.');
+		assert.strictEqual(noBlock.content, 'Just a plain answer.');
+		assert.strictEqual(noBlock.plan, undefined);
+
+		// Malformed JSON: content unchanged so the user sees what the model wrote.
+		const malformed = extractPlan('Plan:\n```localforge-plan\n{not json}\n```');
+		assert.ok(malformed.content.includes('{not json}'));
+		assert.strictEqual(malformed.plan, undefined);
+
+		// Steps missing or empty: no plan entity.
+		const emptySteps = extractPlan('Plan:\n```localforge-plan\n{"summary":"x","steps":[]}\n```');
+		assert.strictEqual(emptySteps.plan, undefined);
+
+		// Invalid action values normalize to "other"; untitled steps are dropped.
+		const normalized = extractPlan(
+			'```localforge-plan\n{"steps":[{"title":"a","action":"explode"},{"files":["b"]},{"title":"c","action":"verify"}]}\n```'
+		);
+		assert.ok(normalized.plan);
+		assert.strictEqual(normalized.plan.steps.length, 2);
+		assert.strictEqual(normalized.plan.steps[0].action, 'other');
+		assert.strictEqual(normalized.plan.steps[1].action, 'verify');
 	});
 
 	test('OpenAI-compatible provider uses the configured output token limit', async () => {
@@ -425,4 +483,5 @@ suite('Extension Test Suite', () => {
 		}
 	});
 });
+
 

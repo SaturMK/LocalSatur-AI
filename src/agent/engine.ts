@@ -30,10 +30,17 @@ import {
     FileEditProposal
 } from "./edit";
 
+import {
+    extractPlan,
+    PlanEntity,
+    PLAN_FENCE_LANGUAGE
+} from "./plan";
+
 export interface AgentResult {
     content: string;
     steps: string[];
     proposals: string[];
+    plan?: PlanEntity;
 }
 
 export type AgentChunkHandler = (
@@ -289,11 +296,17 @@ export class AgentEngine {
                     "Agent completed the response."
                 );
 
+                const completion =
+                    mode === "plan"
+                        ? extractPlan(response.content)
+                        : { content: response.content };
+
                 return {
                     content:
-                        response.content,
+                        completion.content,
                     steps,
-                    proposals
+                    proposals,
+                    plan: completion.plan
                 };
             }
 
@@ -450,7 +463,15 @@ export class AgentEngine {
         }
 
         if (mode === "plan") {
-            return `You are LocalSatur AI in Plan mode. Investigate the request using read-only workspace tools, then produce a concise implementation plan with affected files, ordered changes, validation steps, and risks. Do not propose edits or run commands.`;
+            return `You are LocalSatur AI in Plan mode. Investigate the request using read-only workspace tools, then produce a concise implementation plan with affected files, ordered changes, validation steps, and risks. Do not propose edits or run commands.
+
+End every Plan mode response with a structured plan block using exactly this format:
+
+${PLAN_FENCE_LANGUAGE}
+{"summary":"One sentence describing the change.","steps":[{"title":"Short imperative step title","files":["relative/path.ts"],"action":"edit"}],"risks":["What could go wrong"]}
+${PLAN_FENCE_LANGUAGE}
+
+The block must be valid JSON: "steps" is required with 1-50 objects, each having a "title"; "files" lists affected workspace paths relative to the root; "action" is one of create, edit, delete, verify, other. "risks" is optional. Write the human-readable plan as normal Markdown BEFORE the block; do not put anything after it.`;
         }
 
         return `
