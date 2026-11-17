@@ -11,6 +11,7 @@ import { AgentEngine } from "./agent/engine";
 import { LocalForgeDiffProvider } from "./agent/diff-provider";
 import { AIProviderManager } from "./providers/manager";
 import { ApiKeyStore } from "./providers/secrets";
+import { McpManager } from "./mcp/manager";
 import { getChatHtml } from "./webview/chat";
 import {
     isChangedFileEntry,
@@ -171,6 +172,8 @@ export function activate(
     // TOOL MANAGER
     // =========================================================
 
+    const mcpManager = new McpManager();
+
     /*
      * Pre-edit backups live in the extension's global storage,
      * outside the workspace (audit S5). The directory is created
@@ -186,8 +189,17 @@ export function activate(
         new ToolManager(
             workspaceTools,
             vscodeContext,
-            backupDirectory
+            backupDirectory,
+            mcpManager
         );
+
+    // Discover MCP tools in the background; the agent never blocks
+    // on this and servers that fail stay offline (PRD FR-020).
+    void mcpManager.refreshShared().catch(() => undefined);
+
+    context.subscriptions.push(
+        new vscode.Disposable(() => mcpManager.dispose())
+    );
 
     // =========================================================
     // AGENT ENGINE

@@ -137,7 +137,7 @@ export class AgentEngine {
         const tools =
             modelSupportsTools === false
                 ? []
-                : this.toolManager.getDefinitions(mode);
+                : await this.toolManager.getDefinitions(mode);
 
         const recentHistory =
             history

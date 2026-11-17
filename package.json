@@ -134,6 +134,52 @@
                 "localforge.providers.requesty.supportsTools": {
                     "type": "boolean",
                     "description": "Override Requesty tool-call capability detection. Leave unset to infer from the provider's model metadata."
+                },
+                "localforge.mcp.servers": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Model Context Protocol servers. Keys are server names; tools appear to the agent as mcp__<server>__<tool> in Agent mode. Example: { \"filesystem\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/tmp\"] } }",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "Executable to spawn (stdio transport)."
+                            },
+                            "args": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Command arguments."
+                            },
+                            "env": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "type": "string"
+                                },
+                                "description": "Additional environment variables for the server process."
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Enable this server. Defaults to true."
+                            }
+                        },
+                        "required": [
+                            "command"
+                        ]
+                    }
+                },
+                "localforge.mcp.startTimeout": {
+                    "type": "number",
+                    "default": 10000,
+                    "description": "Milliseconds to wait for an MCP server to initialize before giving up."
+                },
+                "localforge.mcp.callTimeout": {
+                    "type": "number",
+                    "default": 60000,
+                    "description": "Milliseconds to wait for a single MCP tool call before giving up."
                 },                "localforge.ollama.temperature": {
                     "type": "number",
                     "default": 0.2,

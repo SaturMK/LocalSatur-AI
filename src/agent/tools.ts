@@ -20,6 +20,11 @@ import {
 } from "../tools/search";
 
 import {
+    McpManager,
+    isMcpToolName
+} from "../mcp/manager";
+
+import {
     VSCodeContextTools
 } from "../tools/vscode-context";
 
@@ -73,6 +78,9 @@ export class ToolManager {
      */
     private readonly backupDirectory?: string;
 
+    /** MCP tool source, optional (PRD FR-020). */
+    private readonly mcpManager?: McpManager;
+
     private readonly proposals =
         new Map<
             string,
@@ -83,7 +91,8 @@ export class ToolManager {
     constructor(
         workspaceTools: WorkspaceTools,
         vscodeContext: VSCodeContextTools,
-        backupDirectory?: string
+        backupDirectory?: string,
+        mcpManager?: McpManager
     ) {
 
         this.workspaceTools =
@@ -94,6 +103,9 @@ export class ToolManager {
 
         this.backupDirectory =
             backupDirectory;
+
+        this.mcpManager =
+            mcpManager;
 
         this.terminalTools =
             new TerminalTools(
@@ -116,10 +128,10 @@ export class ToolManager {
     // TOOL DEFINITIONS
     // ================================================================
 
-    getDefinitions(
+    async getDefinitions(
         mode: AgentMode = "agent"
     ):
-        AgentToolDefinition[] {
+        Promise<AgentToolDefinition[]> {
 
         const definitions: AgentToolDefinition[] = [
 
@@ -538,7 +550,10 @@ export class ToolManager {
         ];
 
         if (mode === "agent") {
-            return definitions;
+            return await this.withMcpDefinitions(
+                definitions,
+                mode
+            );
         }
 
         return definitions.filter(
@@ -548,6 +563,31 @@ export class ToolManager {
                 definition.function.name !== "propose_file_rename" &&
                 definition.function.name !== "run_command"
         );
+    }
+
+    /**
+     * MCP tools are merged after the mode filter: they may have
+     * side effects, so they are offered in Agent mode only.
+     * Servers that are down contribute no definitions (never
+     * simulated).
+     */
+    private async withMcpDefinitions(
+        definitions: AgentToolDefinition[],
+        mode: AgentMode
+    ): Promise<AgentToolDefinition[]> {
+        if (mode !== "agent" || !this.mcpManager) {
+            return definitions;
+        }
+
+        try {
+            const mcpDefinitions =
+                await this.mcpManager.getToolDefinitions();
+
+            return definitions.concat(mcpDefinitions);
+        } catch {
+            // MCP is an enhancement; never block the agent on it.
+            return definitions;
+        }
     }
 
 
@@ -579,10 +619,25 @@ export class ToolManager {
             (name === "propose_file_edit" ||
                 name === "propose_file_delete" ||
                 name === "propose_file_rename" ||
-                name === "run_command")
+                name === "run_command" ||
+                isMcpToolName(name))
         ) {
             throw new Error(
                 `${name} is not available in ${mode} mode.`
+            );
+        }
+
+        if (isMcpToolName(name)) {
+            if (!this.mcpManager) {
+                throw new Error(
+                    `MCP tools are not available: no MCP servers are configured.`
+                );
+            }
+
+            return await this.mcpManager.executeTool(
+                name,
+                argumentsObject,
+                signal
             );
         }
 

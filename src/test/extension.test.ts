@@ -17,6 +17,8 @@ import { renderMarkdown } from '../webview/markdown';
 import { extractPlan } from '../agent/plan';
 import { recordChangedFile, isChangedFileEntry } from '../agent/changed-files';
 import { sanitizeSessions, sessionTitleFromMessage, summarizeSessions, MAX_SESSIONS } from '../agent/sessions';
+import { McpClient } from '../mcp/client';
+import { mcpToolName, isMcpToolName } from '../mcp/manager';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -369,6 +371,69 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(summaries[1].id, 'old');
 		assert.strictEqual(summaries[1].active, true);
 		assert.strictEqual(summaries[1].active === summaries[0].active, false);
+	});
+
+	test('MCP client performs handshake, tool discovery and tool calls over stdio', async function () {
+		// The extension host strips timeouts from mocha; keep the default.
+		this.timeout(30000);
+
+		/*
+		 * A minimal MCP stdio server: responds to initialize,
+		 * notifications/initialized, tools/list and tools/call with
+		 * newline-delimited JSON-RPC.
+		 */
+		const serverScript = [
+			'const readline = require("readline");',
+			'const rl = readline.createInterface({ input: process.stdin });',
+			'rl.on("line", line => {',
+			'  let message;',
+			'  try { message = JSON.parse(line); } catch { return; }',
+			'  if (message.method === "initialize") {',
+			'    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1.0" } } }) + "\\n");',
+			'    return;',
+			'  }',
+			'  if (message.method === "notifications/initialized") { return; }',
+			'  if (message.method === "tools/list") {',
+			'    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { tools: [ { name: "echo", description: "Echo the input", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } } ] } }) + "\\n");',
+			'    return;',
+			'  }',
+			'  if (message.method === "tools/call") {',
+			'    const text = "echo: " + String(message.params.arguments.text);',
+			'    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [ { type: "text", text } ], isError: false } }) + "\\n");',
+			'    return;',
+			'  }',
+			'  if (message.id !== undefined) {',
+			'    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "unknown method" } }) + "\\n");',
+			'  }',
+			'});'
+		].join('\n');
+
+		const client = new McpClient('test', {
+			command: process.execPath,
+			args: ['-e', serverScript]
+		});
+
+		try {
+			await client.ensureStarted(10000);
+
+			const tools = await client.listTools(10000);
+			assert.strictEqual(tools.length, 1);
+			assert.strictEqual(tools[0].name, 'echo');
+			assert.strictEqual(tools[0].description, 'Echo the input');
+
+			const call = await client.callTool('echo', { text: 'hello' }, 10000);
+			assert.strictEqual(call.isError, false);
+			assert.strictEqual(call.text, 'echo: hello');
+		} finally {
+			client.dispose();
+		}
+	});
+
+	test('MCP tool names are namespaced and sanitized', () => {
+		assert.strictEqual(mcpToolName('filesystem', 'read_file'), 'mcp__filesystem__read_file');
+		assert.strictEqual(mcpToolName('my server.v2', 'do thing'), 'mcp__my_server_v2__do_thing');
+		assert.strictEqual(isMcpToolName('mcp__filesystem__read_file'), true);
+		assert.strictEqual(isMcpToolName('read_file'), false);
 	});
 
 	test('OpenAI-compatible provider uses the configured output token limit', async () => {
