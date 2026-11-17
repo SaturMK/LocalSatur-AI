@@ -247,6 +247,25 @@ export function getChatHtml(
             box-shadow: inset 0 2px 0 var(--primary);
         }
 
+        /* Hidden state holder for the authoritative mode value. */
+        .visually-hidden {
+            position: absolute;
+
+            width: 1px;
+            height: 1px;
+
+            overflow: hidden;
+
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+
+            border: 0;
+            margin: -1px;
+            padding: 0;
+
+            white-space: nowrap;
+        }
+
         /* =========================================
            CONFIG BAR (PRD 7.2, FR-003..005)
            ========================================= */
@@ -1326,6 +1345,30 @@ export function getChatHtml(
                 Agent
             </button>
 
+            <!--
+                The authoritative mode value lives here, hidden: the
+                visible tabs above write to it and listeners read it.
+            -->
+            <select
+                id="mode"
+                class="visually-hidden"
+                aria-hidden="true"
+                tabindex="-1"
+            >
+                <option
+                    value="ask"
+                    selected
+                >
+                    Ask
+                </option>
+                <option value="plan">
+                    Plan
+                </option>
+                <option value="agent">
+                    Agent
+                </option>
+            </select>
+
         </nav>
 
         <!-- =====================================
@@ -2254,7 +2297,7 @@ export function getChatHtml(
                     ),
                     "",
                     "Inspect the affected files first, then make the changes. Validate the result before finishing."
-                ].filter(part => part !== "").join("\n");
+                ].filter(part => part !== "").join("\\n");
 
                 modeSelect.value = "agent";
                 syncModeTabs();
@@ -2938,7 +2981,7 @@ export function getChatHtml(
                     (status.connected
                         ? status.toolCount + " tool(s)"
                         : "offline" + (status.error ? " — " + status.error : ""))
-                ).join("\n");
+                ).join("\\n");
 
                 return;
             }
