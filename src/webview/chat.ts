@@ -922,6 +922,34 @@ export function getChatHtml(
         }
 
         /* =========================================
+           MODEL REASONING (collapsed diagnostic)
+           ========================================= */
+
+        .reasoning-block {
+            margin: 8px 0;
+
+            border: 1px dashed var(--border);
+            border-radius: 8px;
+
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .reasoning-block summary {
+            padding: 5px 10px;
+
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .reasoning-body {
+            padding: 0 10px 8px;
+
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* =========================================
            COMPOSER (PRD 7.7, FR-009/010)
            ========================================= */
 
@@ -3140,6 +3168,33 @@ export function getChatHtml(
                     const body = messageBody(streamingAssistantElement);
                     body.textContent = "";
                     appendAssistantContent(body, message.content);
+                }
+
+                // Reasoning models: show the stripped chain of thought
+                // collapsed above the answer for transparency.
+                if (message.thinking) {
+                    let reasoning = document.querySelector(".reasoning-block");
+
+                    if (!reasoning) {
+                        reasoning = document.createElement("details");
+                        reasoning.className = "reasoning-block";
+
+                        const summary = document.createElement("summary");
+                        summary.textContent = "Model reasoning";
+                        reasoning.appendChild(summary);
+                    }
+
+                    const thinkingBody = document.createElement("div");
+                    thinkingBody.className = "reasoning-body";
+                    thinkingBody.textContent = message.thinking;
+
+                    reasoning.appendChild(thinkingBody);
+
+                    if (streamingAssistantElement) {
+                        messages.insertBefore(reasoning, streamingAssistantElement);
+                    } else {
+                        messages.appendChild(reasoning);
+                    }
                 }
 
                 streamingAssistantElement = null;

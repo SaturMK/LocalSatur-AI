@@ -24,6 +24,11 @@ export interface AIChatOptions {
 export interface AIResponse {
     model: string;
     content: string;
+    /**
+     * Chain-of-thought text emitted by reasoning models, removed
+     * from `content`. Undefined when the model emitted none.
+     */
+    thinking?: string;
     toolCalls?: OllamaToolCall[];
     done: boolean;
 }

@@ -1871,6 +1871,9 @@ class LocalForgeChatViewProvider
                                 content:
                                     result.content,
 
+                                thinking:
+                                    result.thinking,
+
                                 steps:
                                     result.steps
                             });

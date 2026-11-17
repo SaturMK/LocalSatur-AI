@@ -16,6 +16,10 @@ import {
 } from "./project-analyzer";
 
 import {
+    formatProjectAnalysis
+} from "./project-analyzer";
+
+import {
     SearchTools
 } from "../tools/search";
 
@@ -405,7 +409,7 @@ export class ToolManager {
                         "analyze_project",
 
                     description:
-                        "Analyze the current workspace and detect project type, languages, frameworks, package managers, databases, package files, and configuration files.",
+                        "Analyze the current workspace and return a report of the project type, languages, frameworks, package managers, databases, package files, configuration files, and the workspace root layout. Base project summaries on this report.",
 
                     parameters: {
                         type:
@@ -853,10 +857,8 @@ export class ToolManager {
                     await this.projectAnalyzer
                         .analyze();
 
-                return JSON.stringify(
-                    analysis,
-                    null,
-                    2
+                return formatProjectAnalysis(
+                    analysis
                 );
             }
 

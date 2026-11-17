@@ -36,11 +36,20 @@ import {
     PLAN_FENCE_LANGUAGE
 } from "./plan";
 
+import {
+    extractThinking
+} from "./thinking";
+
 export interface AgentResult {
     content: string;
     steps: string[];
     proposals: string[];
     plan?: PlanEntity;
+    /**
+     * Chain-of-thought emitted by reasoning models, stripped from
+     * `content`. Diagnostic only; undefined when none was emitted.
+     */
+    thinking?: string;
 }
 
 export type AgentChunkHandler = (
@@ -171,6 +180,8 @@ export class AgentEngine {
         const proposals: string[] = [];
         const repeatedToolCalls = new Map<string, number>();
 
+        let lastThinking: string | undefined;
+
         const maxIterations =
             vscode.workspace
                 .getConfiguration(
@@ -272,6 +283,15 @@ export class AgentEngine {
              * tool_call_id in the transcript, which OpenAI-compatible APIs
              * reject (audit F1).
              */
+            const thinkingSplit =
+                extractThinking(response.content);
+
+            response.content = thinkingSplit.content;
+
+            if (thinkingSplit.thinking) {
+                lastThinking = thinkingSplit.thinking;
+            }
+
             if (
                 response.content ||
                 (response.toolCalls &&
@@ -306,7 +326,8 @@ export class AgentEngine {
                         completion.content,
                     steps,
                     proposals,
-                    plan: completion.plan
+                    plan: completion.plan,
+                    thinking: lastThinking
                 };
             }
 
@@ -479,16 +500,15 @@ You are LocalSatur AI, a local-first AI coding agent running inside Visual Studi
 
 Your job is to help the user inspect, understand, modify, test, and debug their workspace safely.
 
-Available tools:
-- read_file
-- list_files
-- search_files
-- get_active_editor
-- get_selection
-- get_open_files
-- propose_file_edit
-- propose_file_delete
-- propose_file_rename
+Tools are provided to you as function definitions. Use them to inspect the workspace before answering.
+
+Answer quality rules:
+
+1. Ground every statement in tool results. Quote real file paths, identifiers, and values you actually saw.
+2. Never invent files, functions, configuration, or tool results. If a tool returned nothing or failed, say so.
+3. Be concise and structured. Prefer short paragraphs and bullet points over long prose.
+4. When asked to "check" or "analyze" the project, summarize the concrete findings: project type, languages, frameworks, key directories and files, and what they imply.
+5. Answer the user's actual question first; add context only when it helps.
 
 Important workflow rules:
 

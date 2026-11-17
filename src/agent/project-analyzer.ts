@@ -10,6 +10,8 @@ export interface ProjectAnalysis {
     databases: string[];
     packageFiles: string[];
     configFiles: string[];
+    /** File and directory names at the workspace root, sorted (bounded). */
+    rootEntries: string[];
 }
 
 export class ProjectAnalyzer {
@@ -532,6 +534,13 @@ export class ProjectAnalyzer {
         // FINAL RESULT
         // --------------------------------------------------
 
+        const rootEntries = [
+            ...directories.map(name => name + "/"),
+            ...files
+        ]
+            .sort((a, b) => a.localeCompare(b))
+            .slice(0, 60);
+
         return {
             root:
                 this.root,
@@ -573,7 +582,9 @@ export class ProjectAnalyzer {
                     new Set(
                         configFiles
                     )
-                ).sort()
+                ).sort(),
+
+            rootEntries
         };
     }
 
@@ -1129,4 +1140,59 @@ export class ProjectAnalyzer {
 
         return {};
     }
+}
+
+/**
+ * Render an analysis as a short human-readable report. Small local
+ * models paraphrase pre-formatted text far more reliably than raw
+ * JSON, which reduces hallucinated "project summaries".
+ */
+export function formatProjectAnalysis(
+    analysis: ProjectAnalysis
+): string {
+
+    const joinOrCreate = (
+        values: string[],
+        fallback: string
+    ): string =>
+        values.length > 0
+            ? values.join(", ")
+            : fallback;
+
+    const lines: string[] = [
+        "Project analysis of " + analysis.root + ":",
+        "",
+        "- Project type: " + joinOrCreate(analysis.projectType, "not determined"),
+        "- Languages: " + joinOrCreate(analysis.languages, "not determined"),
+        "- Frameworks: " + joinOrCreate(analysis.frameworks, "none detected"),
+        "- Package managers: " + joinOrCreate(analysis.packageManagers, "none detected"),
+        "- Databases/ORMs: " + joinOrCreate(analysis.databases, "none detected")
+    ];
+
+    if (analysis.packageFiles.length > 0) {
+        lines.push(
+            "- Package files: " + analysis.packageFiles.join(", ")
+        );
+    }
+
+    if (analysis.configFiles.length > 0) {
+        lines.push(
+            "- Configuration files: " + analysis.configFiles.join(", ")
+        );
+    }
+
+    if (analysis.rootEntries.length > 0) {
+        lines.push(
+            "",
+            "Workspace root contains:",
+            analysis.rootEntries.map(entry => "  " + entry).join("\n")
+        );
+    }
+
+    lines.push(
+        "",
+        "Use list_files, search_files, and read_file to inspect any of these areas in detail."
+    );
+
+    return lines.join("\n");
 }

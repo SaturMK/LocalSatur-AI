@@ -19,6 +19,7 @@ import { recordChangedFile, isChangedFileEntry } from '../agent/changed-files';
 import { sanitizeSessions, sessionTitleFromMessage, summarizeSessions, MAX_SESSIONS } from '../agent/sessions';
 import { McpClient } from '../mcp/client';
 import { mcpToolName, isMcpToolName } from '../mcp/manager';
+import { extractThinking, createThinkingFilter } from '../agent/thinking';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -434,6 +435,67 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(mcpToolName('my server.v2', 'do thing'), 'mcp__my_server_v2__do_thing');
 		assert.strictEqual(isMcpToolName('mcp__filesystem__read_file'), true);
 		assert.strictEqual(isMcpToolName('read_file'), false);
+	});
+
+	test('extractThinking strips reasoning tags from complete responses', () => {
+		// No tags: unchanged.
+		assert.strictEqual(extractThinking('plain answer').content, 'plain answer');
+		assert.strictEqual(extractThinking('plain answer').thinking, undefined);
+
+		// Paired tags: reasoning removed, content kept.
+		const paired = extractThinking('<think>hmm, let me look</think>The answer is 4.');
+		assert.strictEqual(paired.content, 'The answer is 4.');
+		assert.strictEqual(paired.thinking, 'hmm, let me look');
+
+		// Unclosed tag: everything after <think> is reasoning.
+		const unclosed = extractThinking('Sure. <think>never finished');
+		assert.strictEqual(unclosed.content, 'Sure. ');
+		assert.strictEqual(unclosed.thinking, 'never finished');
+
+		// Content before the tag is preserved.
+		const prefix = extractThinking('Intro\n<think>x</think>Body');
+		assert.strictEqual(prefix.content, 'Intro\nBody');
+	});
+
+	test('createThinkingFilter catches reasoning tags split across stream chunks', () => {
+		const filter = createThinkingFilter();
+		let emitted = '';
+		const push = (chunk: string) => { emitted += filter.push(chunk).content; };
+
+		// Tag split across every boundary.
+		push('<th');
+		push('ink>secret chain');
+		push(' of thought</th');
+		push('ink>');
+		push('The real answer.');
+		push(' Done.');
+		push('</think>');
+		push(' tail');
+		emitted += filter.flush().content;
+
+		assert.strictEqual(emitted, 'The real answer. Done. tail');
+	});
+
+	test('createThinkingFilter flushes plain held text and unclosed reasoning', () => {
+		// Plain text held back across the boundary is released by flush().
+		const plain = createThinkingFilter();
+		let plainOut = '';
+		plainOut += plain.push('hello <b>world').content;
+		plainOut += plain.flush().content;
+		assert.strictEqual(plainOut, 'hello <b>world');
+
+		// Unclosed <think> at end of stream: nothing leaks as content.
+		const unclosed = createThinkingFilter();
+		let unclosedOut = '';
+		let thinkingOut = '';
+		const unclosedPush = unclosed.push('Answer. <think>still thinking');
+		unclosedOut += unclosedPush.content;
+		if (unclosedPush.thinking) { thinkingOut += unclosedPush.thinking; }
+		const flushed = unclosed.flush();
+		unclosedOut += flushed.content;
+		if (flushed.thinking) { thinkingOut += flushed.thinking; }
+		assert.strictEqual(unclosedOut, 'Answer. ');
+		assert.strictEqual(thinkingOut, 'still thinking');
 	});
 
 	test('OpenAI-compatible provider uses the configured output token limit', async () => {
