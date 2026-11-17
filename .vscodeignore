@@ -15,8 +15,6 @@ ext.txt
 provider*.txt
 TEST.txt
 package.json.localforge-backup-*
-pnpm-lock.yaml
-pnpm-workspace.yaml
 package-lock.json
 *.vsix
 .gitignore
