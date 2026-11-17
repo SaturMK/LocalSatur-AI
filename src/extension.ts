@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 
 import { randomUUID } from "crypto";
 
-import { ChatMessage, OllamaClient } from "./ollama/client";
+import { OllamaClient } from "./ollama/client";
 import { WorkspaceTools } from "./tools/workspace";
 import { VSCodeContextTools } from "./tools/vscode-context";
 import { ToolManager } from "./agent/tools";
@@ -13,10 +13,18 @@ import { AIProviderManager } from "./providers/manager";
 import { ApiKeyStore } from "./providers/secrets";
 import { getChatHtml } from "./webview/chat";
 import {
-    ChangedFileEntry,
     isChangedFileEntry,
     recordChangedFile
 } from "./agent/changed-files";
+import {
+    ChatSessionSnapshot,
+    MAX_SESSION_MESSAGES,
+    MAX_SESSIONS,
+    isValidChatMessage,
+    sanitizeSessions,
+    sessionTitleFromMessage,
+    summarizeSessions
+} from "./agent/sessions";
 
 interface ChatAttachment {
     name: string;
@@ -31,13 +39,18 @@ const MAX_ATTACHMENT_SIZE =
 const MAX_TOTAL_ATTACHMENT_SIZE =
     5 * 1024 * 1024;
 
+const CHANGED_FILES_STATE_KEY =
+    "localforge.changedFiles";
+
+/** Legacy single-conversation keys, read only for migration (PRD FR-012). */
 const CONVERSATION_STATE_KEY =
     "localforge.conversationHistory";
 
-const MAX_CONVERSATION_MESSAGES = 40;
+const SESSIONS_STATE_KEY =
+    "localforge.sessions";
 
-const CHANGED_FILES_STATE_KEY =
-    "localforge.changedFiles";
+const ACTIVE_SESSION_STATE_KEY =
+    "localforge.activeSessionId";
 
 function buildAttachmentContext(
     content: string,
@@ -916,10 +929,10 @@ class LocalForgeChatViewProvider
 
     private readonly providerManager: AIProviderManager;
 
-    private readonly conversationHistory: ChatMessage[];
+    /** All persisted sessions, oldest update first (PRD FR-012). */
+    private sessions: ChatSessionSnapshot[];
 
-    /** Files changed through agent proposals in this session (PRD FR-011). */
-    private changedFiles: ChangedFileEntry[] = [];
+    private activeSessionId: string;
 
     private activeRequest?: vscode.CancellationTokenSource;
 
@@ -936,36 +949,161 @@ class LocalForgeChatViewProvider
         this.workspaceTools = workspaceTools;
         this.providerManager = providerManager;
 
-        const savedHistory =
+        /*
+         * Load sessions (PRD FR-012). A workspace last used with an
+         * older single-conversation layout is migrated into one
+         * session so no history is lost.
+         */
+        const savedSessions = sanitizeSessions(
             context.workspaceState.get<unknown>(
-                CONVERSATION_STATE_KEY,
+                SESSIONS_STATE_KEY,
                 []
-            );
+            )
+        );
 
-        this.conversationHistory =
-            Array.isArray(savedHistory)
-                ? savedHistory
-                    .filter(
-                        (message): message is ChatMessage =>
-                            typeof message === "object" &&
-                            message !== null &&
-                            (message.role === "user" || message.role === "assistant") &&
-                            typeof message.content === "string"
-                    )
-                    .slice(-MAX_CONVERSATION_MESSAGES)
+        if (savedSessions.length > 0) {
+            this.sessions = savedSessions;
+        } else {
+            const legacyMessages =
+                context.workspaceState.get<unknown>(
+                    CONVERSATION_STATE_KEY,
+                    []
+                );
+
+            const legacyChangedFiles =
+                context.workspaceState.get<unknown>(
+                    CHANGED_FILES_STATE_KEY,
+                    []
+                );
+
+            const messages = Array.isArray(legacyMessages)
+                ? legacyMessages.filter(isValidChatMessage)
                 : [];
 
-        const savedChangedFiles =
-            context.workspaceState.get<unknown>(
-                CHANGED_FILES_STATE_KEY,
-                []
+            const changedFiles = Array.isArray(legacyChangedFiles)
+                ? legacyChangedFiles.filter(isChangedFileEntry)
+                : [];
+
+            const firstUserMessage = messages.find(
+                message => message.role === "user"
             );
 
-        this.changedFiles =
-            Array.isArray(savedChangedFiles)
-                ? savedChangedFiles
-                    .filter(isChangedFileEntry)
-                : [];
+            const migrated: ChatSessionSnapshot = {
+                id: randomUUID(),
+                title: firstUserMessage
+                    ? sessionTitleFromMessage(firstUserMessage.content)
+                    : "New session",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                messages: messages.slice(-MAX_SESSION_MESSAGES),
+                changedFiles
+            };
+
+            this.sessions = [migrated];
+
+            void this.context.workspaceState.update(
+                SESSIONS_STATE_KEY,
+                this.sessions
+            );
+        }
+
+        const savedActiveSessionId =
+            context.workspaceState.get<string>(
+                ACTIVE_SESSION_STATE_KEY,
+                ""
+            );
+
+        this.activeSessionId =
+            savedActiveSessionId &&
+            this.sessions.some(session => session.id === savedActiveSessionId)
+                ? savedActiveSessionId
+                : this.sessions[this.sessions.length - 1].id;
+    }
+
+    // =========================================================
+    // SESSIONS (PRD FR-012)
+    // =========================================================
+
+    private createSession(): ChatSessionSnapshot {
+        const session: ChatSessionSnapshot = {
+            id: randomUUID(),
+            title: "New session",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: [],
+            changedFiles: []
+        };
+
+        this.sessions.push(session);
+
+        /*
+         * Drop the oldest sessions beyond the cap, never the active one.
+         */
+        if (this.sessions.length > MAX_SESSIONS) {
+            const byOldest = [...this.sessions].sort(
+                (a, b) => a.updatedAt - b.updatedAt
+            );
+
+            for (
+                const candidate of byOldest
+            ) {
+                if (this.sessions.length <= MAX_SESSIONS) {
+                    break;
+                }
+
+                if (candidate.id !== this.activeSessionId) {
+                    this.sessions = this.sessions.filter(
+                        session => session.id !== candidate.id
+                    );
+                }
+            }
+        }
+
+        this.switchToSession(session.id);
+
+        return session;
+    }
+
+    private switchToSession(sessionId: string): void {
+        this.activeSessionId = sessionId;
+        void this.persistSessions();
+    }
+
+    private ensureActiveSession(): ChatSessionSnapshot {
+        let active = this.sessions.find(
+            session => session.id === this.activeSessionId
+        );
+
+        if (!active) {
+            active = this.createSession();
+        }
+
+        return active;
+    }
+
+    private async persistSessions(): Promise<void> {
+        await this.context.workspaceState.update(
+            SESSIONS_STATE_KEY,
+            this.sessions
+        );
+
+        await this.context.workspaceState.update(
+            ACTIVE_SESSION_STATE_KEY,
+            this.activeSessionId
+        );
+    }
+
+    private postSessionState(
+        panel: vscode.WebviewPanel | vscode.WebviewView
+    ): void {
+        panel.webview.postMessage({
+            type: "sessions",
+            sessions: summarizeSessions(
+                this.sessions,
+                this.activeSessionId
+            ),
+            activeSessionId: this.activeSessionId
+        });
     }
 
     resolveWebviewView(
@@ -1008,31 +1146,85 @@ class LocalForgeChatViewProvider
                 try {
 
                     if (message?.type === "getConversation") {
+                        const active =
+                            this.ensureActiveSession();
+
                         panel.webview.postMessage({
                             type: "conversation",
-                            messages: this.conversationHistory,
-                            changedFiles: this.changedFiles
+                            reset: true,
+                            messages: active.messages,
+                            changedFiles: active.changedFiles
                         });
+                        this.postSessionState(panel);
                         return;
                     }
 
                     if (message?.type === "newChat") {
-                        this.conversationHistory.length = 0;
-                        await this.context.workspaceState.update(
-                            CONVERSATION_STATE_KEY,
-                            []
-                        );
-
-                        this.changedFiles = [];
-                        await this.context.workspaceState.update(
-                            CHANGED_FILES_STATE_KEY,
-                            []
-                        );
+                        this.createSession();
 
                         panel.webview.postMessage({
                             type: "conversationCleared",
-                            changedFiles: this.changedFiles
+                            changedFiles: []
                         });
+                        this.postSessionState(panel);
+                        return;
+                    }
+
+                    if (message?.type === "switchSession") {
+                        const target = this.sessions.find(
+                            session => session.id === message.id
+                        );
+
+                        if (target) {
+                            this.switchToSession(target.id);
+
+                            panel.webview.postMessage({
+                                type: "conversation",
+                                reset: true,
+                                messages: target.messages,
+                                changedFiles: target.changedFiles
+                            });
+                            this.postSessionState(panel);
+                        }
+
+                        return;
+                    }
+
+                    if (message?.type === "deleteSession") {
+                        const target = this.sessions.find(
+                            session => session.id === message.id
+                        );
+
+                        if (target) {
+                            this.sessions = this.sessions.filter(
+                                session => session.id !== target.id
+                            );
+
+                            if (this.activeSessionId === target.id) {
+                                const mostRecent =
+                                    this.sessions.length > 0
+                                        ? this.sessions.reduce(
+                                            (latest, session) =>
+                                                session.updatedAt > latest.updatedAt
+                                                    ? session
+                                                    : latest
+                                        )
+                                        : this.createSession();
+
+                                this.switchToSession(mostRecent.id);
+
+                                panel.webview.postMessage({
+                                    type: "conversation",
+                                    reset: true,
+                                    messages: mostRecent.messages,
+                                    changedFiles: mostRecent.changedFiles
+                                });
+                            }
+
+                            await this.persistSessions();
+                            this.postSessionState(panel);
+                        }
+
                         return;
                     }
 
@@ -1551,7 +1743,7 @@ class LocalForgeChatViewProvider
                                         });
                                     },
                                     mode,
-                                    this.conversationHistory,
+                                    this.ensureActiveSession().messages,
                                     {
                                         cancellationToken:
                                             requestCancellation.token,
@@ -1580,7 +1772,10 @@ class LocalForgeChatViewProvider
                                 .filter(Boolean)
                                 .join("\n\n");
 
-                            this.conversationHistory.push(
+                            const activeSession =
+                                this.ensureActiveSession();
+
+                            activeSession.messages.push(
                                 {
                                     role: "user",
                                     content: historyContent || "Attached files"
@@ -1591,17 +1786,25 @@ class LocalForgeChatViewProvider
                                 }
                             );
 
-                            if (this.conversationHistory.length > MAX_CONVERSATION_MESSAGES) {
-                                this.conversationHistory.splice(
+                            if (activeSession.messages.length > MAX_SESSION_MESSAGES) {
+                                activeSession.messages.splice(
                                     0,
-                                    this.conversationHistory.length - MAX_CONVERSATION_MESSAGES
+                                    activeSession.messages.length - MAX_SESSION_MESSAGES
                                 );
                             }
 
-                            await this.context.workspaceState.update(
-                                CONVERSATION_STATE_KEY,
-                                this.conversationHistory
-                            );
+                            if (
+                                activeSession.title === "New session" &&
+                                historyContent
+                            ) {
+                                activeSession.title =
+                                    sessionTitleFromMessage(historyContent);
+                            }
+
+                            activeSession.updatedAt = Date.now();
+
+                            await this.persistSessions();
+                            this.postSessionState(panel);
 
                             panel.webview.postMessage({
                                 type: "response",
@@ -1769,8 +1972,11 @@ class LocalForgeChatViewProvider
                                         ? "edit"
                                         : proposal.operation;
 
-                                this.changedFiles = recordChangedFile(
-                                    this.changedFiles,
+                                const activeSession =
+                                    this.ensureActiveSession();
+
+                                activeSession.changedFiles = recordChangedFile(
+                                    activeSession.changedFiles,
                                     {
                                         path: proposal.path,
                                         targetPath:
@@ -1782,15 +1988,15 @@ class LocalForgeChatViewProvider
                                     }
                                 );
 
-                                await this.context.workspaceState.update(
-                                    CHANGED_FILES_STATE_KEY,
-                                    this.changedFiles
-                                );
+                                activeSession.updatedAt = Date.now();
+
+                                await this.persistSessions();
 
                                 panel.webview.postMessage({
                                     type: "changedFiles",
-                                    changedFiles: this.changedFiles
+                                    changedFiles: activeSession.changedFiles
                                 });
+                                this.postSessionState(panel);
                             }
 
                             panel.webview.postMessage({

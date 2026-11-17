@@ -16,6 +16,7 @@ import { VSCodeContextTools } from '../tools/vscode-context';
 import { renderMarkdown } from '../webview/markdown';
 import { extractPlan } from '../agent/plan';
 import { recordChangedFile, isChangedFileEntry } from '../agent/changed-files';
+import { sanitizeSessions, sessionTitleFromMessage, summarizeSessions, MAX_SESSIONS } from '../agent/sessions';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -303,6 +304,73 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(isChangedFileEntry(null), false);
 	});
 
+	test('Session store sanitizes persisted data and derives titles', async () => {
+				const now = Date.now();
+
+		const valid = {
+			id: 's1',
+			title: 'Refactor',
+			createdAt: now,
+			updatedAt: now,
+			messages: [
+				{ role: 'user', content: 'Refactor the provider layer' },
+				{ role: 'assistant', content: 'Here is my plan' },
+				{ role: 'bogus', content: 'dropped' },
+				{ role: 'user' }
+			],
+			changedFiles: [
+				{ path: 'src/a.ts', operation: 'edit', timestamp: now },
+				{ path: 42, operation: 'edit', timestamp: now }
+			]
+		};
+
+		const malformed = { id: 7, title: 'nope' };
+		const notAnObject = 'garbage';
+
+		const sessions = sanitizeSessions([valid, malformed, notAnObject]);
+
+		assert.strictEqual(sessions.length, 1);
+		assert.strictEqual(sessions[0].id, 's1');
+		assert.strictEqual(sessions[0].messages.length, 2, 'invalid messages are dropped');
+		assert.strictEqual(sessions[0].changedFiles.length, 1, 'invalid changed-file entries are dropped');
+
+		assert.strictEqual(sanitizeSessions('nope').length, 0);
+		assert.strictEqual(sanitizeSessions(null).length, 0);
+
+		// Cap: oldest sessions are dropped beyond MAX_SESSIONS.
+		const tooMany = Array.from({ length: MAX_SESSIONS + 5 }, (_v, index) => ({
+			id: 's' + index,
+			title: 't' + index,
+			createdAt: now + index,
+			updatedAt: now + index,
+			messages: [],
+			changedFiles: []
+		}));
+		assert.strictEqual(sanitizeSessions(tooMany).length, MAX_SESSIONS);
+		assert.strictEqual(sanitizeSessions(tooMany)[0].id, 's5', 'oldest sessions are dropped');
+
+		// Titles: first line, whitespace-collapsed, truncated at 48 chars.
+		assert.strictEqual(sessionTitleFromMessage('Fix the bug\n\nin parser'), 'Fix the bug');
+		assert.strictEqual(sessionTitleFromMessage('   \n  '), 'New session');
+		const long = 'x'.repeat(60);
+		const titled = sessionTitleFromMessage(long);
+		assert.ok(titled.length <= 49);
+		assert.ok(titled.endsWith('…'));
+
+		// Summaries: most recently updated first, active flagged.
+		const summaries = summarizeSessions(
+			[
+				{ id: 'old', title: 'Old', createdAt: now, updatedAt: now, messages: [], changedFiles: [] },
+				{ id: 'new', title: 'New', createdAt: now, updatedAt: now + 1000, messages: [{ role: 'user', content: 'hi' }], changedFiles: [{ path: 'p', operation: 'edit', timestamp: now }] }
+			],
+			'old'
+		);
+		assert.strictEqual(summaries[0].id, 'new');
+		assert.strictEqual(summaries[1].id, 'old');
+		assert.strictEqual(summaries[1].active, true);
+		assert.strictEqual(summaries[1].active === summaries[0].active, false);
+	});
+
 	test('OpenAI-compatible provider uses the configured output token limit', async () => {
 		const originalFetch = globalThis.fetch;
 		let requestBody: Record<string, unknown> | undefined;
@@ -531,6 +599,7 @@ suite('Extension Test Suite', () => {
 		}
 	});
 });
+
 
 
 

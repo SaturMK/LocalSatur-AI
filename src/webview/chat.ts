@@ -817,6 +817,64 @@ export function getChatHtml(
         }
 
         /* =========================================
+           SESSIONS (PRD FR-012)
+           ========================================= */
+
+        .session-row {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+
+            padding: 5px 6px;
+
+            border: 1px solid transparent;
+            border-radius: var(--radius-button);
+            background: transparent;
+
+            font-size: 12px;
+            text-align: left;
+        }
+
+        .session-row:hover {
+            background: var(--surface);
+        }
+
+        .session-row.active {
+            border-color: rgba(7, 136, 249, 0.55);
+        }
+
+        .session-title {
+            flex: 1;
+
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .session-meta {
+            font-size: 10px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .session-delete {
+            padding: 0 6px;
+
+            border: 0;
+            border-radius: 50%;
+            background: transparent;
+
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .session-delete:hover {
+            color: var(--danger);
+            background: rgba(255, 86, 86, 0.14);
+        }
+
+        /* =========================================
            COMPOSER (PRD 7.7, FR-009/010)
            ========================================= */
 
@@ -1129,6 +1187,17 @@ export function getChatHtml(
             </div>
 
             <button
+                id="sessions-button"
+                class="icon"
+                type="button"
+                title="Chat sessions"
+                aria-expanded="false"
+                aria-controls="sessions-panel"
+            >
+                Sessions
+            </button>
+
+            <button
                 id="changed-files-button"
                 class="icon hidden"
                 type="button"
@@ -1166,6 +1235,23 @@ export function getChatHtml(
 
             <div
                 id="changed-files-list"
+                class="changes-list"
+            >
+            </div>
+
+        </div>
+
+        <div
+            id="sessions-panel"
+            class="changes-panel hidden"
+        >
+
+            <div class="changes-panel-title">
+                Chat sessions
+            </div>
+
+            <div
+                id="sessions-list"
                 class="changes-list"
             >
             </div>
@@ -1539,6 +1625,9 @@ export function getChatHtml(
         const refreshModelsButton = el("refresh-models");
         const apiKeyButton = el("api-key-button");
         const newChatButton = el("new-chat");
+        const sessionsButton = el("sessions-button");
+        const sessionsPanel = el("sessions-panel");
+        const sessionsList = el("sessions-list");
         const changedFilesButton = el("changed-files-button");
         const changedFilesPanel = el("changed-files-panel");
         const changedFilesList = el("changed-files-list");
@@ -1610,6 +1699,93 @@ export function getChatHtml(
         changedFilesButton.addEventListener("click", () => {
             const hidden = changedFilesPanel.classList.toggle("hidden");
             changedFilesButton.setAttribute("aria-expanded", String(!hidden));
+        });
+
+        // =========================================
+        // SESSIONS (PRD FR-012)
+        // =========================================
+
+        let sessionSummaries = [];
+
+        let activeSessionId = "";
+
+        function formatSessionAge(timestamp) {
+            const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+
+            if (minutes < 1) {
+                return "now";
+            }
+
+            if (minutes < 60) {
+                return minutes + "m";
+            }
+
+            const hours = Math.round(minutes / 60);
+
+            if (hours < 24) {
+                return hours + "h";
+            }
+
+            return Math.round(hours / 24) + "d";
+        }
+
+        function renderSessions() {
+            sessionsList.innerHTML = "";
+
+            sessionSummaries.forEach(session => {
+                const row = document.createElement("div");
+                row.className = "session-row" + (session.id === activeSessionId ? " active" : "");
+
+                const title = document.createElement("button");
+                title.type = "button";
+                title.className = "session-title";
+                title.textContent = session.title;
+                title.title = "Switch to this session";
+                title.addEventListener("click", () => {
+                    if (session.id === activeSessionId || sendButton.disabled) {
+                        return;
+                    }
+
+                    vscode.postMessage({
+                        type: "switchSession",
+                        id: session.id
+                    });
+                });
+
+                const meta = document.createElement("span");
+                meta.className = "session-meta";
+                meta.textContent =
+                    session.messageCount + " msg · " + formatSessionAge(session.updatedAt);
+
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "session-delete";
+                remove.textContent = "×";
+                remove.title = "Delete session";
+                remove.setAttribute("aria-label", "Delete session: " + session.title);
+                remove.addEventListener("click", () => {
+                    vscode.postMessage({
+                        type: "deleteSession",
+                        id: session.id
+                    });
+                });
+
+                row.appendChild(title);
+                row.appendChild(meta);
+                row.appendChild(remove);
+                sessionsList.appendChild(row);
+            });
+        }
+
+        function applySessions(sessions, newActiveSessionId) {
+            sessionSummaries = Array.isArray(sessions) ? sessions : [];
+            activeSessionId = typeof newActiveSessionId === "string" ? newActiveSessionId : "";
+            renderSessions();
+        }
+
+        sessionsButton.addEventListener("click", () => {
+            const hidden = sessionsPanel.classList.toggle("hidden");
+            sessionsButton.setAttribute("aria-expanded", String(!hidden));
         });
 
         function applyChangedFiles(list) {
@@ -2670,7 +2846,7 @@ export function getChatHtml(
             if (message.type === "conversation") {
                 const history = Array.isArray(message.messages) ? message.messages : [];
 
-                if (history.length > 0) {
+                if (message.reset || history.length > 0) {
                     messages.innerHTML = "";
                 }
 
@@ -2684,6 +2860,11 @@ export function getChatHtml(
                 });
 
                 applyChangedFiles(message.changedFiles);
+                return;
+            }
+
+            if (message.type === "sessions") {
+                applySessions(message.sessions, message.activeSessionId);
                 return;
             }
 
