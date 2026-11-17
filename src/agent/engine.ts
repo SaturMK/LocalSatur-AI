@@ -23,6 +23,10 @@ import {
 } from "./tools";
 
 import {
+    AgentMode
+} from "./tools";
+
+import {
     FileEditProposal
 } from "./edit";
 
@@ -36,6 +40,19 @@ export type AgentChunkHandler = (
     chunk: string
 ) => void | Promise<void>;
 
+export interface AgentActivity {
+    type: "iteration" | "tool" | "status";
+    label: string;
+    detail?: string;
+}
+
+export interface AgentRunOptions {
+    cancellationToken?: vscode.CancellationToken;
+    onActivity?: (
+        activity: AgentActivity
+    ) => void | Promise<void>;
+}
+
 export class AgentEngine {
     private readonly providerManager:
         AIProviderManager;
@@ -45,14 +62,18 @@ export class AgentEngine {
 
     constructor(
         ollama: OllamaClient,
-        toolManager: ToolManager
+        toolManager: ToolManager,
+        providerManager?: AIProviderManager
     ) {
         this.providerManager =
+            providerManager ??
             new AIProviderManager();
 
-        this.providerManager.register(
-            new OllamaProvider(ollama)
-        );
+        if (!providerManager) {
+            this.providerManager.register(
+                new OllamaProvider(ollama)
+            );
+        }
 
         this.toolManager =
             toolManager;
@@ -60,31 +81,88 @@ export class AgentEngine {
 
     async run(
         userMessage: string,
-        onChunk?: AgentChunkHandler
+        onChunk?: AgentChunkHandler,
+        mode: AgentMode = "agent",
+        history: ChatMessage[] = [],
+        runOptions: AgentRunOptions = {}
+    ): Promise<AgentResult> {
+        const abortController = new AbortController();
+        const cancellationSubscription =
+            runOptions.cancellationToken?.onCancellationRequested(
+                () => abortController.abort()
+            );
+
+        try {
+            return await this.runInternal(
+                userMessage,
+                onChunk,
+                mode,
+                history,
+                runOptions,
+                abortController.signal
+            );
+        } finally {
+            cancellationSubscription?.dispose();
+        }
+    }
+
+    private async runInternal(
+        userMessage: string,
+        onChunk: AgentChunkHandler | undefined,
+        mode: AgentMode,
+        history: ChatMessage[],
+        runOptions: AgentRunOptions,
+        signal: AbortSignal
     ): Promise<AgentResult> {
         const provider =
             this.getActiveProvider();
 
         const model =
-            this.getActiveModel();
+            this.getActiveModel(provider.id);
+
+        const selectedModel =
+            (await provider.getModels().catch(() => []))
+                .find(candidate => candidate.id === model);
+
+        const modelSupportsTools =
+            selectedModel?.capabilities?.includes("tools");
+
+        const tools =
+            modelSupportsTools === false
+                ? []
+                : this.toolManager.getDefinitions(mode);
+
+        const recentHistory =
+            history
+                .filter(message =>
+                    message.role === "user" ||
+                    message.role === "assistant"
+                )
+                .slice(-20)
+                .map(message => ({
+                    ...message,
+                    content: message.content.slice(-12000)
+                }));
 
         const messages: ChatMessage[] = [
             {
                 role: "system",
                 content:
-                    this.getSystemPrompt()
+                    this.getSystemPrompt(
+                        mode,
+                        modelSupportsTools !== false
+                    )
             },
+            ...recentHistory,
             {
                 role: "user",
                 content: userMessage
             }
         ];
 
-        const tools =
-            this.toolManager.getDefinitions();
-
         const steps: string[] = [];
         const proposals: string[] = [];
+        const repeatedToolCalls = new Map<string, number>();
 
         const maxIterations =
             vscode.workspace
@@ -93,7 +171,17 @@ export class AgentEngine {
                 )
                 .get<number>(
                     "maxIterations",
-                    8
+                    16
+                );
+
+        const maxOutputTokens =
+            vscode.workspace
+                .getConfiguration(
+                    "localforge.agent"
+                )
+                .get<number>(
+                    "maxOutputTokens",
+                    8192
                 );
 
         for (
@@ -101,9 +189,16 @@ export class AgentEngine {
             iteration < maxIterations;
             iteration++
         ) {
+            this.throwIfCanceled(signal);
+
             steps.push(
                 `Iteration ${iteration + 1}`
             );
+
+            await runOptions.onActivity?.({
+                type: "iteration",
+                label: `Iteration ${iteration + 1}`
+            });
 
             let response;
 
@@ -140,10 +235,17 @@ export class AgentEngine {
                                         16384
                                     ),
 
-                            tools
+                            maxOutputTokens,
+
+                            tools,
+                            signal
                         }
                     );
             } catch (error) {
+                if (signal.aborted) {
+                    throw new Error("The agent request was canceled.");
+                }
+
                 const message =
                     error instanceof Error
                         ? error.message
@@ -156,7 +258,18 @@ export class AgentEngine {
                 throw error;
             }
 
-            if (response.content) {
+            /*
+             * Always preserve the assistant tool-call message. Tool-calling
+             * models frequently return empty content alongside tool calls;
+             * dropping the message would leave tool results with no matching
+             * tool_call_id in the transcript, which OpenAI-compatible APIs
+             * reject (audit F1).
+             */
+            if (
+                response.content ||
+                (response.toolCalls &&
+                    response.toolCalls.length > 0)
+            ) {
                 messages.push({
                     role: "assistant",
                     content:
@@ -188,17 +301,53 @@ export class AgentEngine {
                 const toolCall
                 of toolCalls
             ) {
+                this.throwIfCanceled(signal);
+
                 const toolName =
                     toolCall.function.name;
+
+                const fingerprint = `${toolName}:${JSON.stringify(
+                    toolCall.function.arguments ?? {}
+                )}`;
+                const callCount =
+                    (repeatedToolCalls.get(fingerprint) ?? 0) + 1;
+
+                repeatedToolCalls.set(
+                    fingerprint,
+                    callCount
+                );
+
+                if (callCount > 2) {
+                    const loopMessage =
+                        `Stopped repeated tool call: ${toolName}.`;
+
+                    steps.push(loopMessage);
+                    messages.push({
+                        role: "tool",
+                        content: JSON.stringify({
+                            error: "This identical tool call has already run twice. Inspect the prior result and choose a different action."
+                        }),
+                        tool_name: toolName
+                    });
+                    continue;
+                }
 
                 steps.push(
                     `Executing tool: ${toolName}`
                 );
 
+                await runOptions.onActivity?.({
+                    type: "tool",
+                    label: `Running ${toolName}`
+                });
+
                 const toolResult =
                     await this.executeToolCall(
                         toolCall,
-                        proposals
+                        proposals,
+                        mode,
+                        signal,
+                        runOptions.onActivity
                     );
 
                 messages.push({
@@ -206,7 +355,12 @@ export class AgentEngine {
                     content:
                         toolResult,
                     tool_name:
-                        toolName
+                        toolCall.id ?? toolName
+                });
+
+                await runOptions.onActivity?.({
+                    type: "tool",
+                    label: `Completed ${toolName}`
                 });
             }
         }
@@ -221,6 +375,14 @@ export class AgentEngine {
             steps,
             proposals
         };
+    }
+
+    private throwIfCanceled(
+        signal: AbortSignal
+    ): void {
+        if (signal.aborted) {
+            throw new Error("The agent request was canceled.");
+        }
     }
 
     private getActiveProvider():
@@ -249,8 +411,21 @@ export class AgentEngine {
         return provider;
     }
 
-    private getActiveModel():
+    private getActiveModel(
+        providerId: string
+    ):
         string {
+        if (providerId !== "ollama") {
+            return vscode.workspace
+                .getConfiguration(
+                    `localforge.providers.${providerId}`
+                )
+                .get<string>(
+                    "model",
+                    ""
+                );
+        }
+
         return vscode.workspace
             .getConfiguration(
                 "localforge.ollama"
@@ -261,8 +436,23 @@ export class AgentEngine {
             );
     }
 
-    private getSystemPrompt():
+    private getSystemPrompt(
+        mode: AgentMode,
+        toolsAvailable: boolean
+    ):
         string {
+        if (!toolsAvailable) {
+            return `You are LocalSatur AI in ${mode} mode, but the selected model does not support tool calls. Answer directly and do not claim to inspect, modify, or run anything in the workspace.`;
+        }
+
+        if (mode === "ask") {
+            return `You are LocalSatur AI in Ask mode. Answer naturally and accurately. Use read-only workspace tools when needed to ground explanations or debugging guidance. Do not propose or apply changes, and do not run commands.`;
+        }
+
+        if (mode === "plan") {
+            return `You are LocalSatur AI in Plan mode. Investigate the request using read-only workspace tools, then produce a concise implementation plan with affected files, ordered changes, validation steps, and risks. Do not propose edits or run commands.`;
+        }
+
         return `
 You are LocalSatur AI, a local-first AI coding agent running inside Visual Studio Code.
 
@@ -276,6 +466,8 @@ Available tools:
 - get_selection
 - get_open_files
 - propose_file_edit
+- propose_file_delete
+- propose_file_rename
 
 Important workflow rules:
 
@@ -313,7 +505,12 @@ When the user asks for a modification, first inspect the relevant files, then pr
 
     private async executeToolCall(
         toolCall: OllamaToolCall,
-        proposals: string[]
+        proposals: string[],
+        mode: AgentMode,
+        signal: AbortSignal,
+        onActivity?: (
+            activity: AgentActivity
+        ) => void | Promise<void>
     ): Promise<string> {
         const name =
             toolCall.function.name;
@@ -326,12 +523,22 @@ When the user asks for a modification, first inspect the relevant files, then pr
             const result =
                 await this.toolManager.execute(
                     name,
-                    args
+                    args,
+                    mode,
+                    signal,
+                    async (label, detail) => {
+                        await onActivity?.({
+                            type: "tool",
+                            label,
+                            detail
+                        });
+                    }
                 );
 
             if (
-                name ===
-                "propose_file_edit"
+                name === "propose_file_edit" ||
+                name === "propose_file_delete" ||
+                name === "propose_file_rename"
             ) {
                 const proposalId =
                     this.extractProposalId(
@@ -346,9 +553,9 @@ When the user asks for a modification, first inspect the relevant files, then pr
 
                     if (proposal) {
                         const validationError =
-                            this.validateWholeFileProposal(
-                                proposal
-                            );
+                            proposal.operation === "delete"
+                                ? undefined
+                                : this.validateWholeFileProposal(proposal);
 
                         if (
                             validationError

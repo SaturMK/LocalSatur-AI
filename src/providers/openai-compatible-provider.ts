@@ -1,3 +1,5 @@
+import * as vscode from "vscode";
+
 import {
     ChatMessage,
     OllamaTool,
@@ -11,6 +13,10 @@ import {
     AIProvider,
     AIResponse
 } from "./types";
+
+import {
+    ApiKeyStore
+} from "./secrets";
 
 interface OpenAIMessage {
     role: string;
@@ -73,6 +79,7 @@ export interface OpenAICompatibleProviderOptions {
     name: string;
     baseUrl: string;
     apiKey?: string;
+    apiKeySetting?: string;
 }
 
 /**
@@ -89,6 +96,7 @@ export class OpenAICompatibleProvider
 
     private readonly baseUrl: string;
     private readonly apiKey?: string;
+    private readonly apiKeySetting?: string;
 
     constructor(
         options: OpenAICompatibleProviderOptions
@@ -103,7 +111,42 @@ export class OpenAICompatibleProvider
             );
 
         this.apiKey =
-            options.apiKey;
+            options.apiKey?.trim() || undefined;
+        this.apiKeySetting =
+            options.apiKeySetting;
+    }
+
+    /**
+     * Resolve the API key for this provider.
+     *
+     * Keys are read from SecretStorage first (secure storage, audit S1).
+     * Legacy plaintext configuration values are used as a read-only
+     * fallback so existing setups keep working until the key is
+     * re-saved through the secure flow.
+     */
+    async getResolvedApiKey(): Promise<string | undefined> {
+        const storedKey = await ApiKeyStore.get(this.id);
+
+        if (storedKey) {
+            return storedKey;
+        }
+
+        if (this.apiKeySetting) {
+            const relativeSetting =
+                this.apiKeySetting.startsWith("localforge.")
+                    ? this.apiKeySetting.slice("localforge.".length)
+                    : this.apiKeySetting;
+
+            const configuredKey =
+                vscode.workspace
+                    .getConfiguration("localforge")
+                    .get<string>(relativeSetting, "");
+
+            const trimmed = configuredKey.trim();
+            return trimmed.length > 0 ? trimmed : undefined;
+        }
+
+        return this.apiKey;
     }
 
     async isAvailable(): Promise<boolean> {
@@ -114,7 +157,7 @@ export class OpenAICompatibleProvider
                     {
                         method: "GET",
                         headers:
-                            this.getHeaders()
+                            await this.getHeaders()
                     }
                 );
 
@@ -131,7 +174,7 @@ export class OpenAICompatibleProvider
                 {
                     method: "GET",
                     headers:
-                        this.getHeaders()
+                        await this.getHeaders()
                 }
             );
 
@@ -146,15 +189,53 @@ export class OpenAICompatibleProvider
             await response.json() as {
                 data?: Array<{
                     id: string;
+                    supported_parameters?: string[];
                 }>;
             };
 
+        /*
+         * Providers that omit `supported_parameters` report unknown
+         * capability. A user-configured override (audit F3) settles
+         * the question for all models of this provider.
+         *
+         * The override is read through inspect() because a declared
+         * boolean setting resolves to `false` even when unset, which
+         * would otherwise disable tool detection for everyone.
+         * Only an explicit user value (workspace, then global) counts.
+         */
+        const overrideInspection = vscode.workspace
+            .getConfiguration(`localforge.providers.${this.id}`)
+            .inspect<boolean>("supportsTools");
+
+        const supportsToolsOverride =
+            overrideInspection?.workspaceValue ??
+            overrideInspection?.globalValue;
+
         return (data.data ?? []).map(
-            model => ({
-                id: model.id,
-                name: model.id,
-                provider: this.id
-            })
+            model => {
+                let capabilities: string[] | undefined;
+
+                if (supportsToolsOverride !== undefined) {
+                    capabilities = supportsToolsOverride
+                        ? ["tools"]
+                        : [];
+                } else if (
+                    model.supported_parameters === undefined
+                ) {
+                    capabilities = undefined;
+                } else {
+                    capabilities = model.supported_parameters.includes("tools")
+                        ? ["tools"]
+                        : [];
+                }
+
+                return {
+                    id: model.id,
+                    name: model.id,
+                    provider: this.id,
+                    capabilities
+                };
+            }
         );
     }
 
@@ -169,7 +250,8 @@ export class OpenAICompatibleProvider
                 {
                     method: "POST",
                     headers:
-                        this.getHeaders(),
+                        await this.getHeaders(),
+                    signal: options?.signal,
                     body:
                         JSON.stringify(
                             this.buildRequest(
@@ -225,7 +307,8 @@ export class OpenAICompatibleProvider
                 {
                     method: "POST",
                     headers:
-                        this.getHeaders(),
+                        await this.getHeaders(),
+                    signal: options?.signal,
                     body:
                         JSON.stringify(
                             this.buildRequest(
@@ -268,6 +351,126 @@ export class OpenAICompatibleProvider
 
         let finished = false;
 
+        /*
+         * SSE messages may spread one payload across several
+         * "data:" lines; they are joined with newlines before
+         * parsing (audit F2).
+         */
+        let dataLines: string[] = [];
+
+        const processPayload = async (
+            payload: string
+        ): Promise<void> => {
+            if (payload === "[DONE]") {
+                finished = true;
+                return;
+            }
+
+            let chunk:
+                OpenAIStreamChunk;
+
+            try {
+                chunk =
+                    JSON.parse(payload) as OpenAIStreamChunk;
+            } catch {
+                return;
+            }
+
+            if (chunk.model) {
+                responseModel =
+                    chunk.model;
+            }
+
+            const delta =
+                chunk.choices?.[0]?.delta;
+
+            if (!delta) {
+                return;
+            }
+
+            if (
+                typeof delta.content ===
+                "string" &&
+                delta.content.length > 0
+            ) {
+                content +=
+                    delta.content;
+
+                await onChunk(
+                    delta.content
+                );
+            }
+
+            for (
+                const toolCall
+                of delta.tool_calls ?? []
+            ) {
+                const existing =
+                    toolCalls.get(
+                        toolCall.index
+                    );
+
+                if (!existing) {
+                    toolCalls.set(
+                        toolCall.index,
+                        {
+                            id:
+                                toolCall.id ??
+                                "",
+                            name:
+                                toolCall.function
+                                    ?.name ??
+                                "",
+                            arguments:
+                                toolCall.function
+                                    ?.arguments ??
+                                ""
+                        }
+                    );
+
+                    continue;
+                }
+
+                if (toolCall.id) {
+                    existing.id =
+                        toolCall.id;
+                }
+
+                if (
+                    toolCall.function?.name
+                ) {
+                    existing.name =
+                        toolCall.function.name;
+                }
+
+                if (
+                    toolCall.function?.arguments
+                ) {
+                    existing.arguments +=
+                        toolCall.function.arguments;
+                }
+            }
+
+            if (
+                chunk.choices?.[0]?.finish_reason
+            ) {
+                finished = true;
+            }
+        };
+
+        const dispatchEvent = async (): Promise<void> => {
+            if (dataLines.length === 0) {
+                return;
+            }
+
+            const payload =
+                dataLines.join("\n");
+
+            dataLines = [];
+
+            await processPayload(payload);
+        };
+
         while (!finished) {
             const result =
                 await reader.read();
@@ -284,123 +487,56 @@ export class OpenAICompatibleProvider
                     }
                 );
 
-            const lines =
-                buffer.split(/\r?\n/);
+            let newlineIndex =
+                buffer.indexOf("\n");
 
-            buffer =
-                lines.pop() ?? "";
+            while (
+                !finished &&
+                newlineIndex !== -1
+            ) {
+                const line =
+                    buffer
+                        .slice(0, newlineIndex)
+                        .replace(/\r$/, "");
 
-            for (const line of lines) {
-                const parsed =
-                    this.parseSseLine(line);
+                buffer =
+                    buffer.slice(newlineIndex + 1);
 
-                if (
-                    parsed === null
-                ) {
-                    continue;
-                }
-
-                if (parsed === "[DONE]") {
-                    finished = true;
-                    break;
-                }
-
-                let chunk:
-                    OpenAIStreamChunk;
-
-                try {
-                    chunk =
-                        JSON.parse(parsed) as OpenAIStreamChunk;
-                } catch {
-                    continue;
-                }
-
-                if (chunk.model) {
-                    responseModel =
-                        chunk.model;
-                }
-
-                const delta =
-                    chunk.choices?.[0]?.delta;
-
-                if (!delta) {
-                    continue;
-                }
-
-                if (
-                    typeof delta.content ===
-                    "string" &&
-                    delta.content.length > 0
-                ) {
-                    content +=
-                        delta.content;
-
-                    await onChunk(
-                        delta.content
+                if (line === "") {
+                    // Blank line: end of the current SSE event.
+                    await dispatchEvent();
+                } else if (line.startsWith("data:")) {
+                    dataLines.push(
+                        line.slice(5).trimStart()
                     );
                 }
 
-                for (
-                    const toolCall
-                    of delta.tool_calls ?? []
-                ) {
-                    const existing =
-                        toolCalls.get(
-                            toolCall.index
-                        );
+                // Other SSE fields (event:, id:, retry:, comments) are ignored.
 
-                    if (!existing) {
-                        toolCalls.set(
-                            toolCall.index,
-                            {
-                                id:
-                                    toolCall.id ??
-                                    "",
-                                name:
-                                    toolCall.function
-                                        ?.name ??
-                                    "",
-                                arguments:
-                                    toolCall.function
-                                        ?.arguments ??
-                                    ""
-                            }
-                        );
-
-                        continue;
-                    }
-
-                    if (toolCall.id) {
-                        existing.id =
-                            toolCall.id;
-                    }
-
-                    if (
-                        toolCall.function?.name
-                    ) {
-                        existing.name =
-                            toolCall.function.name;
-                    }
-
-                    if (
-                        toolCall.function?.arguments
-                    ) {
-                        existing.arguments +=
-                            toolCall.function.arguments;
-                    }
-                }
-
-                if (
-                    chunk.choices?.[0]?.finish_reason
-                ) {
-                    finished = true;
-                    break;
-                }
+                newlineIndex =
+                    buffer.indexOf("\n");
             }
         }
 
         buffer +=
             decoder.decode();
+
+        // Flush a final event that was not terminated by a blank line.
+
+        if (buffer.trim()) {
+            const line =
+                buffer.replace(/\r$/, "");
+
+            if (line.startsWith("data:")) {
+                dataLines.push(
+                    line.slice(5).trimStart()
+                );
+            }
+        }
+
+        if (!finished) {
+            await dispatchEvent();
+        }
 
         const convertedToolCalls =
             this.convertAccumulatedToolCalls(
@@ -416,15 +552,17 @@ export class OpenAICompatibleProvider
         };
     }
 
-    private getHeaders(): Record<string, string> {
+    private async getHeaders(): Promise<Record<string, string>> {
         const headers: Record<string, string> = {
             "Content-Type":
                 "application/json"
         };
 
-        if (this.apiKey) {
+        const resolvedApiKey = await this.getResolvedApiKey();
+
+        if (resolvedApiKey) {
             headers.Authorization =
-                `Bearer ${this.apiKey}`;
+                `Bearer ${resolvedApiKey}`;
         }
 
         return headers;
@@ -457,11 +595,11 @@ export class OpenAICompatibleProvider
         }
 
         if (
-            typeof options?.contextLength ===
+            typeof options?.maxOutputTokens ===
             "number"
         ) {
             request.max_tokens =
-                options.contextLength;
+                options.maxOutputTokens;
         }
 
         if (
@@ -511,7 +649,7 @@ export class OpenAICompatibleProvider
                 message.tool_calls.map(
                     call => ({
                         id:
-                            call.function.name,
+                            call.id ?? call.function.name,
                         type:
                             "function",
                         function: {
@@ -644,36 +782,6 @@ export class OpenAICompatibleProvider
         }
 
         return {};
-    }
-
-    private parseSseLine(
-        line: string
-    ): string | null {
-        const trimmed =
-            line.trim();
-
-        if (!trimmed) {
-            return null;
-        }
-
-        if (
-            trimmed ===
-            "data: [DONE]"
-        ) {
-            return "[DONE]";
-        }
-
-        if (
-            trimmed.startsWith(
-                "data:"
-            )
-        ) {
-            return trimmed
-                .slice(5)
-                .trim();
-        }
-
-        return null;
     }
 
     private async createHttpError(

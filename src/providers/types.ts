@@ -15,7 +15,10 @@ export interface AIModel {
 export interface AIChatOptions {
     temperature?: number;
     contextLength?: number;
+    maxOutputTokens?: number;
     tools?: OllamaTool[];
+    /** Cancels an in-flight HTTP request or streamed response. */
+    signal?: AbortSignal;
 }
 
 export interface AIResponse {

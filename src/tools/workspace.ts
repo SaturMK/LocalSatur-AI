@@ -26,9 +26,70 @@ export class WorkspaceTools {
         return this.fallbackRoot;
     }
 
-    private resolveSafePath(
+    private assertInside(
+        root: string,
+        target: string
+    ): void {
+        if (
+            target !== root &&
+            !target.startsWith(
+                `${root}${path.sep}`
+            )
+        ) {
+            throw new Error(
+                "Access denied: path is outside the workspace."
+            );
+        }
+    }
+
+    /**
+     * Resolve symlinks so a link inside the workspace cannot point
+     * outside of it (audit S4).
+     *
+     * The final segment may not exist yet (new files), so the deepest
+     * existing ancestor is resolved instead.
+     */
+    private async resolveRealPath(
+        target: string
+    ): Promise<string> {
+        try {
+            return await fs.realpath(
+                target
+            );
+        } catch {
+            let existing =
+                path.dirname(target);
+
+            while (
+                existing !==
+                path.dirname(existing)
+            ) {
+                try {
+                    const resolved =
+                        await fs.realpath(
+                            existing
+                        );
+
+                    return path.join(
+                        resolved,
+                        path.relative(
+                            existing,
+                            target
+                        )
+                    );
+                } catch {
+                    existing =
+                        path.dirname(existing);
+                }
+            }
+
+            return target;
+        }
+    }
+
+    private async resolveSafePath(
         relativePath: string
-    ): string {
+    ): Promise<string> {
         const root =
             path.resolve(
                 this.getWorkspaceRoot()
@@ -40,16 +101,23 @@ export class WorkspaceTools {
                 relativePath
             );
 
-        if (
-            target !== root &&
-            !target.startsWith(
-                `${root}${path.sep}`
-            )
-        ) {
-            throw new Error(
-                "Access denied: path is outside the workspace."
-            );
-        }
+        this.assertInside(
+            root,
+            target
+        );
+
+        /*
+         * The workspace root itself may be reached
+         * through a symlink (e.g. a mounted folder).
+         */
+        const realRoot = await fs.realpath(root).catch(() => root);
+
+        const realTarget = await this.resolveRealPath(target);
+
+        this.assertInside(
+            realRoot,
+            realTarget
+        );
 
         return target;
     }
@@ -58,7 +126,7 @@ export class WorkspaceTools {
         relativePath: string = ""
     ): Promise<WorkspaceFile[]> {
         const targetPath =
-            this.resolveSafePath(
+            await this.resolveSafePath(
                 relativePath
             );
 
@@ -100,7 +168,7 @@ export class WorkspaceTools {
         relativePath: string
     ): Promise<string> {
         const targetPath =
-            this.resolveSafePath(
+            await this.resolveSafePath(
                 relativePath
             );
 
@@ -126,7 +194,7 @@ export class WorkspaceTools {
         content: string
     ): Promise<void> {
         const targetPath =
-            this.resolveSafePath(
+            await this.resolveSafePath(
                 relativePath
             );
 
@@ -149,11 +217,29 @@ export class WorkspaceTools {
         );
     }
 
+    async deleteFile(
+        relativePath: string
+    ): Promise<void> {
+        const targetPath = await this.resolveSafePath(relativePath);
+        await fs.unlink(targetPath);
+    }
+
+    async renameFile(
+        sourcePath: string,
+        targetPath: string
+    ): Promise<void> {
+        const source = await this.resolveSafePath(sourcePath);
+        const target = await this.resolveSafePath(targetPath);
+
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.rename(source, target);
+    }
+
     async fileExists(
         relativePath: string
     ): Promise<boolean> {
         const targetPath =
-            this.resolveSafePath(
+            await this.resolveSafePath(
                 relativePath
             );
 
@@ -172,10 +258,10 @@ export class WorkspaceTools {
         return this.getWorkspaceRoot();
     }
 
-    getAbsolutePath(
+    async getAbsolutePath(
         relativePath: string
-    ): string {
-        return this.resolveSafePath(
+    ): Promise<string> {
+        return await this.resolveSafePath(
             relativePath
         );
     }

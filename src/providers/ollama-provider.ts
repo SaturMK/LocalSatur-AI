@@ -72,7 +72,9 @@ export class OllamaProvider implements AIProvider {
             await this.client.chat(
                 model,
                 messages,
-                options?.tools
+                options?.tools,
+                options?.maxOutputTokens,
+                options?.signal
             );
 
         return {
@@ -95,7 +97,9 @@ export class OllamaProvider implements AIProvider {
                 model,
                 messages,
                 options?.tools,
-                onChunk
+                onChunk,
+                options?.maxOutputTokens,
+                options?.signal
             );
 
         return {

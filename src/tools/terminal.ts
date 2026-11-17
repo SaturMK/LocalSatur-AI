@@ -1,13 +1,6 @@
 import {
-    exec
+    spawn
 } from "child_process";
-
-import {
-    promisify
-} from "util";
-
-const execAsync =
-    promisify(exec);
 
 export interface TerminalResult {
     command: string;
@@ -15,6 +8,9 @@ export interface TerminalResult {
     stdout: string;
     stderr: string;
     success: boolean;
+    canceled?: boolean;
+    timedOut?: boolean;
+    truncated?: boolean;
 }
 
 export class TerminalTools {
@@ -76,7 +72,12 @@ export class TerminalTools {
     }
 
     async runCommand(
-        command: string
+        command: string,
+        signal?: AbortSignal,
+        onOutput?: (
+            stream: "stdout" | "stderr",
+            chunk: string
+        ) => void
     ): Promise<TerminalResult> {
 
         const normalized =
@@ -105,75 +106,105 @@ export class TerminalTools {
             );
         }
 
-        try {
-            const result =
-                await execAsync(
-                    normalized,
-                    {
-                        cwd:
-                            this.workspaceRoot,
-
-                        windowsHide:
-                            true,
-
-                        timeout:
-                            120_000,
-
-                        maxBuffer:
-                            10 * 1024 * 1024
-                    }
-                );
-
+        if (signal?.aborted) {
             return {
-                command:
-                    normalized,
-
-                exitCode:
-                    0,
-
-                stdout:
-                    result.stdout,
-
-                stderr:
-                    result.stderr,
-
-                success:
-                    true
-            };
-
-        } catch (error) {
-
-            const processError =
-                error as {
-                    code?: number;
-                    stdout?: string;
-                    stderr?: string;
-                    message?: string;
-                };
-
-            return {
-                command:
-                    normalized,
-
-                exitCode:
-                    typeof processError.code ===
-                    "number"
-                        ? processError.code
-                        : 1,
-
-                stdout:
-                    processError.stdout ??
-                    "",
-
-                stderr:
-                    processError.stderr ??
-                    processError.message ??
-                    "",
-
-                success:
-                    false
+                command: normalized,
+                exitCode: -1,
+                stdout: "",
+                stderr: "Command was canceled before it started.",
+                success: false,
+                canceled: true
             };
         }
+
+        return await new Promise<TerminalResult>(resolve => {
+            const maxOutputBytes = 10 * 1024 * 1024;
+            let stdout = "";
+            let stderr = "";
+            let outputBytes = 0;
+            let timedOut = false;
+            let canceled = false;
+            let settled = false;
+
+            const process = spawn(normalized, {
+                cwd: this.workspaceRoot,
+                shell: true,
+                windowsHide: true
+            });
+
+            const finish = (
+                exitCode: number,
+                errorMessage = ""
+            ): void => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                clearTimeout(timeout);
+                signal?.removeEventListener("abort", cancel);
+
+                if (errorMessage) {
+                    stderr += errorMessage;
+                }
+
+                resolve({
+                    command: normalized,
+                    exitCode,
+                    stdout,
+                    stderr,
+                    success: exitCode === 0 && !canceled && !timedOut,
+                    canceled,
+                    timedOut,
+                    truncated: outputBytes >= maxOutputBytes
+                });
+            };
+
+            const appendOutput = (
+                stream: "stdout" | "stderr",
+                chunk: Buffer
+            ): void => {
+                if (outputBytes >= maxOutputBytes) {
+                    return;
+                }
+
+                const text = chunk.toString("utf-8");
+                const remaining = maxOutputBytes - outputBytes;
+                const limited = text.slice(0, remaining);
+                outputBytes += Buffer.byteLength(limited);
+
+                if (stream === "stdout") {
+                    stdout += limited;
+                } else {
+                    stderr += limited;
+                }
+
+                if (limited) {
+                    onOutput?.(stream, limited);
+                }
+            };
+
+            process.stdout?.on("data", (chunk: Buffer) =>
+                appendOutput("stdout", chunk)
+            );
+            process.stderr?.on("data", (chunk: Buffer) =>
+                appendOutput("stderr", chunk)
+            );
+            process.on("error", error => finish(1, error.message));
+            process.on("close", code => finish(code ?? 1));
+
+            const cancel = (): void => {
+                canceled = true;
+                process.kill();
+            };
+
+            const timeout = setTimeout(() => {
+                timedOut = true;
+                process.kill();
+            }, 120_000);
+
+            signal?.addEventListener("abort", cancel, { once: true });
+        });
     }
 }
 

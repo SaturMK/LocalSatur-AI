@@ -28,6 +28,7 @@ export interface ChatMessage {
 }
 
 export interface OllamaToolCall {
+    id?: string;
     type?: "function";
     function: {
         name: string;
@@ -176,7 +177,9 @@ export class OllamaClient {
     async chat(
         model: string,
         messages: ChatMessage[],
-        tools?: OllamaTool[]
+        tools?: OllamaTool[],
+        maxOutputTokens?: number,
+        signal?: AbortSignal
     ): Promise<OllamaChatResponse> {
         const configuration =
             vscode.workspace.getConfiguration(
@@ -201,7 +204,10 @@ export class OllamaClient {
             stream: false,
             options: {
                 temperature,
-                num_ctx: contextLength
+                num_ctx: contextLength,
+                ...(typeof maxOutputTokens === "number"
+                    ? { num_predict: maxOutputTokens }
+                    : {})
             }
         };
 
@@ -216,6 +222,7 @@ export class OllamaClient {
                 headers: {
                     "Content-Type": "application/json"
                 },
+                signal,
                 body: JSON.stringify(body)
             }
         );
@@ -239,7 +246,9 @@ export class OllamaClient {
         model: string,
         messages: ChatMessage[],
         tools?: OllamaTool[],
-        onChunk?: OllamaChunkHandler
+        onChunk?: OllamaChunkHandler,
+        maxOutputTokens?: number,
+        signal?: AbortSignal
     ): Promise<OllamaChatResponse> {
         const configuration =
             vscode.workspace.getConfiguration(
@@ -264,7 +273,10 @@ export class OllamaClient {
             stream: true,
             options: {
                 temperature,
-                num_ctx: contextLength
+                num_ctx: contextLength,
+                ...(typeof maxOutputTokens === "number"
+                    ? { num_predict: maxOutputTokens }
+                    : {})
             }
         };
 
@@ -279,6 +291,7 @@ export class OllamaClient {
                 headers: {
                     "Content-Type": "application/json"
                 },
+                signal,
                 body: JSON.stringify(body)
             }
         );

@@ -98,13 +98,18 @@ export class AIProviderManager {
         if (
             config.apiKeySetting
         ) {
+            const relativeSetting =
+                config.apiKeySetting.startsWith("localforge.")
+                    ? config.apiKeySetting.slice("localforge.".length)
+                    : config.apiKeySetting;
+
             apiKey =
                 vscode.workspace
                     .getConfiguration(
                         "localforge"
                     )
                     .get<string>(
-                        config.apiKeySetting
+                        relativeSetting
                     );
         }
 
@@ -112,7 +117,8 @@ export class AIProviderManager {
             id: config.id,
             name: config.name,
             baseUrl: config.baseUrl,
-            apiKey
+            apiKey,
+            apiKeySetting: config.apiKeySetting
         });
     }
 

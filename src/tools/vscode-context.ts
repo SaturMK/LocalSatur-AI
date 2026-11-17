@@ -379,11 +379,21 @@ export class VSCodeContextTools implements vscode.Disposable {
 
     /**
      * Open a file in VS Code.
+     *
+     * The path may come from the model, so it must be confined to the
+     * workspace. Absolute paths and ".." traversal are rejected instead
+     * of being opened directly (audit S2).
      */
     async openFile(filePath: string): Promise<ActiveEditorContext> {
-        const absolutePath = path.isAbsolute(filePath)
-            ? filePath
-            : path.join(this.workspaceRoot, filePath);
+        const root = path.resolve(this.workspaceRoot);
+        const absolutePath = path.resolve(root, filePath);
+
+        if (
+            absolutePath !== root &&
+            !absolutePath.startsWith(root + path.sep)
+        ) {
+            throw new Error("Access denied: path is outside the workspace.");
+        }
 
         const document =
             await vscode.workspace.openTextDocument(

@@ -5,3 +5,14 @@ node_modules
 *.vsix
 .local-ai/
 .manulai/
+.kilo/
+*.localforge-backup-*
+audit-*
+*.log
+client-inspect.txt
+chat_view.txt
+engine.txt
+ext.txt
+provider.txt
+provider_full.txt
+TEST.txt

@@ -10,7 +10,17 @@
     "categories": [
         "Other"
     ],
-    "activationEvents": [],
+    "activationEvents": [
+        "onView:localforge.chatView",
+        "onCommand:localforge.helloWorld",
+        "onCommand:localforge.testOllama",
+        "onCommand:localforge.setProviderApiKey",
+        "onCommand:localforge.openChat",
+        "onCommand:localforge.inspectWorkspace",
+        "onCommand:localforge.debugEditor",
+        "onCommand:localforge.applyEdit",
+        "onCommand:localforge.rejectEdit"
+    ],
     "main": "./dist/extension.js",
     "contributes": {
         "commands": [
@@ -21,6 +31,10 @@
             {
                 "command": "localforge.testOllama",
                 "title": "LocalSatur AI: Test Ollama"
+            },
+            {
+                "command": "localforge.setProviderApiKey",
+                "title": "LocalSatur AI: Set Provider API Key"
             },
             {
                 "command": "localforge.openChat",
@@ -79,7 +93,48 @@
                     "default": "qwen3:8b-16k",
                     "description": "Ollama model used by the LocalSatur AI agent."
                 },
-                "localforge.ollama.temperature": {
+                "localforge.providers.openrouter.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Deprecated fallback for the OpenRouter API key. Prefer 'LocalSatur AI: Set Provider API Key', which stores keys in secure storage."
+                },
+                "localforge.providers.openrouter.model": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Model to use for OpenRouter."
+                },
+                "localforge.providers.openrouter.supportsTools": {
+                    "type": "boolean",
+                    "description": "Override OpenRouter tool-call capability detection. Leave unset to infer from the provider's model metadata."
+                },
+                "localforge.providers.nvidia.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Deprecated fallback for the NVIDIA NIM API key. Prefer 'LocalSatur AI: Set Provider API Key', which stores keys in secure storage."
+                },
+                "localforge.providers.nvidia.model": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Model to use for NVIDIA NIM."
+                },
+                "localforge.providers.nvidia.supportsTools": {
+                    "type": "boolean",
+                    "description": "Override NVIDIA NIM tool-call capability detection. Leave unset to infer from the provider's model metadata."
+                },
+                "localforge.providers.requesty.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Deprecated fallback for the Requesty API key. Prefer 'LocalSatur AI: Set Provider API Key', which stores keys in secure storage."
+                },
+                "localforge.providers.requesty.model": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Model to use for Requesty."
+                },
+                "localforge.providers.requesty.supportsTools": {
+                    "type": "boolean",
+                    "description": "Override Requesty tool-call capability detection. Leave unset to infer from the provider's model metadata."
+                },                "localforge.ollama.temperature": {
                     "type": "number",
                     "default": 0.2,
                     "minimum": 0,
@@ -94,10 +149,17 @@
                 },
                 "localforge.agent.maxIterations": {
                     "type": "number",
-                    "default": 8,
+                    "default": 16,
                     "minimum": 1,
                     "maximum": 50,
                     "description": "Maximum number of agent iterations per request."
+                },
+                "localforge.agent.maxOutputTokens": {
+                    "type": "number",
+                    "default": 8192,
+                    "minimum": 256,
+                    "maximum": 32768,
+                    "description": "Maximum response tokens generated per Agent iteration."
                 }
             }
         }
@@ -131,7 +193,8 @@
     "overrides": {
         "diff": "^8.0.4",
         "serialize-javascript": "^7.0.4"
+    },
+    "allowScripts": {
+        "esbuild@0.28.2": true
     }
 }
-
-

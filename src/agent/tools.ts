@@ -1,4 +1,7 @@
 import { randomUUID } from "crypto";
+import * as fs from "fs/promises";
+import * as path from "path";
+import * as vscode from "vscode";
 
 import {
     WorkspaceTools
@@ -43,6 +46,8 @@ export interface AgentToolDefinition {
     };
 }
 
+export type AgentMode = "ask" | "plan" | "agent";
+
 
 export class ToolManager {
 
@@ -61,6 +66,13 @@ export class ToolManager {
     private readonly vscodeContext:
         VSCodeContextTools;
 
+    /**
+     * Directory for pre-edit backups, outside the workspace
+     * (audit S5). When unset, backups fall back to a
+     * timestamped file beside the original.
+     */
+    private readonly backupDirectory?: string;
+
     private readonly proposals =
         new Map<
             string,
@@ -70,7 +82,8 @@ export class ToolManager {
 
     constructor(
         workspaceTools: WorkspaceTools,
-        vscodeContext: VSCodeContextTools
+        vscodeContext: VSCodeContextTools,
+        backupDirectory?: string
     ) {
 
         this.workspaceTools =
@@ -78,6 +91,9 @@ export class ToolManager {
 
         this.vscodeContext =
             vscodeContext;
+
+        this.backupDirectory =
+            backupDirectory;
 
         this.terminalTools =
             new TerminalTools(
@@ -100,10 +116,12 @@ export class ToolManager {
     // TOOL DEFINITIONS
     // ================================================================
 
-    getDefinitions():
+    getDefinitions(
+        mode: AgentMode = "agent"
+    ):
         AgentToolDefinition[] {
 
-        return [
+        const definitions: AgentToolDefinition[] = [
 
             // ========================================================
             // VS CODE CONTEXT
@@ -125,6 +143,60 @@ export class ToolManager {
                             "object",
 
                         properties: {}
+                    }
+                }
+            },
+
+            {
+                type: "function",
+
+                function: {
+                    name: "propose_file_delete",
+
+                    description: "Create a deletion proposal for a workspace file. This does NOT delete the file; explicit user approval is required.",
+
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            path: {
+                                type: "string",
+                                description: "Relative workspace path of the file to delete."
+                            },
+                            reason: {
+                                type: "string",
+                                description: "Why this file should be deleted."
+                            }
+                        },
+                        required: ["path", "reason"]
+                    }
+                }
+            },
+
+            {
+                type: "function",
+
+                function: {
+                    name: "propose_file_rename",
+
+                    description: "Create a rename proposal for a workspace file. This does NOT rename the file; explicit user approval is required.",
+
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            path: {
+                                type: "string",
+                                description: "Relative workspace path of the file to rename."
+                            },
+                            new_path: {
+                                type: "string",
+                                description: "New relative workspace path."
+                            },
+                            reason: {
+                                type: "string",
+                                description: "Why this file should be renamed."
+                            }
+                        },
+                        required: ["path", "new_path", "reason"]
                     }
                 }
             },
@@ -464,6 +536,18 @@ export class ToolManager {
                 }
             }
         ];
+
+        if (mode === "agent") {
+            return definitions;
+        }
+
+        return definitions.filter(
+            definition =>
+                definition.function.name !== "propose_file_edit" &&
+                definition.function.name !== "propose_file_delete" &&
+                definition.function.name !== "propose_file_rename" &&
+                definition.function.name !== "run_command"
+        );
     }
 
 
@@ -477,8 +561,30 @@ export class ToolManager {
             Record<
                 string,
                 unknown
-            >
+            >,
+        mode: AgentMode = "agent",
+        signal?: AbortSignal,
+        onActivity?: (
+            label: string,
+            detail?: string
+        ) => void | Promise<void>
     ): Promise<string> {
+
+        if (signal?.aborted) {
+            throw new Error("The agent request was canceled.");
+        }
+
+        if (
+            mode !== "agent" &&
+            (name === "propose_file_edit" ||
+                name === "propose_file_delete" ||
+                name === "propose_file_rename" ||
+                name === "run_command")
+        ) {
+            throw new Error(
+                `${name} is not available in ${mode} mode.`
+            );
+        }
 
         switch (name) {
 
@@ -752,6 +858,14 @@ export class ToolManager {
                     );
             }
 
+            case "propose_file_delete": {
+                return await this.proposeFileDelete(argumentsObject);
+            }
+
+            case "propose_file_rename": {
+                return await this.proposeFileRename(argumentsObject);
+            }
+
 
             // ========================================================
             // RUN COMMAND
@@ -774,10 +888,38 @@ export class ToolManager {
                     );
                 }
 
+                const approval =
+                    await vscode.window.showWarningMessage(
+                        `Allow LocalSatur AI to run this verification command?`,
+                        {
+                            modal: true,
+                            detail: command
+                        },
+                        "Run Command"
+                    );
+
+                if (approval !== "Run Command") {
+                    return JSON.stringify({
+                        command: command.trim(),
+                        exitCode: -1,
+                        stdout: "",
+                        stderr: "Command was not approved by the user.",
+                        success: false,
+                        canceled: true
+                    });
+                }
+
                 const result =
                     await this.terminalTools
                         .runCommand(
-                            command
+                            command,
+                            signal,
+                            (stream, chunk) => {
+                                void onActivity?.(
+                                    `Command ${stream}`,
+                                    chunk.slice(0, 2000)
+                                );
+                            }
                         );
 
                 return JSON.stringify(
@@ -889,7 +1031,8 @@ export class ToolManager {
 
             proposedContent,
 
-            reason
+            reason,
+            operation: "write"
         };
 
 
@@ -916,12 +1059,108 @@ export class ToolManager {
                 originalExists:
                     exists,
 
+                operation: "write",
+
                 message:
                     "The file has NOT been modified. User approval is required before the proposal can be applied."
             },
             null,
             2
         );
+    }
+
+    private async proposeFileDelete(
+        argumentsObject: Record<string, unknown>
+    ): Promise<string> {
+        const relativePath = argumentsObject.path;
+        const reason = argumentsObject.reason;
+
+        if (typeof relativePath !== "string" || !relativePath.trim()) {
+            throw new Error("propose_file_delete requires a valid file path.");
+        }
+
+        if (typeof reason !== "string" || !reason.trim()) {
+            throw new Error("propose_file_delete requires a reason.");
+        }
+
+        if (!await this.workspaceTools.fileExists(relativePath)) {
+            throw new Error(`Cannot delete a file that does not exist: ${relativePath}`);
+        }
+
+        const proposal: FileEditProposal = {
+            id: randomUUID(),
+            path: relativePath,
+            originalContent: await this.workspaceTools.readFile(relativePath),
+            proposedContent: "",
+            reason,
+            operation: "delete"
+        };
+
+        this.proposals.set(proposal.id, proposal);
+
+        return JSON.stringify({
+            status: "proposal_created",
+            proposalId: proposal.id,
+            path: proposal.path,
+            reason: proposal.reason,
+            operation: proposal.operation,
+            message: "The file has NOT been deleted. User approval is required before the proposal can be applied."
+        }, null, 2);
+    }
+
+    private async proposeFileRename(
+        argumentsObject: Record<string, unknown>
+    ): Promise<string> {
+        const relativePath = argumentsObject.path;
+        const targetPath = argumentsObject.new_path;
+        const reason = argumentsObject.reason;
+
+        if (typeof relativePath !== "string" || !relativePath.trim()) {
+            throw new Error("propose_file_rename requires a valid source file path.");
+        }
+
+        if (typeof targetPath !== "string" || !targetPath.trim()) {
+            throw new Error("propose_file_rename requires a valid target file path.");
+        }
+
+        if (typeof reason !== "string" || !reason.trim()) {
+            throw new Error("propose_file_rename requires a reason.");
+        }
+
+        if (relativePath === targetPath) {
+            throw new Error("The source and destination paths must be different.");
+        }
+
+        if (!await this.workspaceTools.fileExists(relativePath)) {
+            throw new Error(`Cannot rename a file that does not exist: ${relativePath}`);
+        }
+
+        if (await this.workspaceTools.fileExists(targetPath)) {
+            throw new Error(`Cannot rename over an existing file: ${targetPath}`);
+        }
+
+        const originalContent = await this.workspaceTools.readFile(relativePath);
+        const proposal: FileEditProposal = {
+            id: randomUUID(),
+            path: relativePath,
+            targetPath,
+            originalContent,
+            proposedContent: originalContent,
+            reason,
+            operation: "rename"
+        };
+
+        this.proposals.set(proposal.id, proposal);
+
+        return JSON.stringify({
+            status: "proposal_created",
+            proposalId: proposal.id,
+            path: proposal.path,
+            targetPath: proposal.targetPath,
+            reason: proposal.reason,
+            operation: proposal.operation,
+            message: "The file has NOT been renamed. User approval is required before the proposal can be applied."
+        }, null, 2);
     }
 
 
@@ -1007,6 +1246,20 @@ export class ToolManager {
             );
         }
 
+        const operation = proposal.operation ?? "write";
+
+        if (operation === "rename") {
+            if (!proposal.targetPath) {
+                throw new Error("Rename proposal is missing a destination path.");
+            }
+
+            if (await this.workspaceTools.fileExists(proposal.targetPath)) {
+                throw new Error(
+                    `Cannot rename over an existing file: ${proposal.targetPath}`
+                );
+            }
+        }
+
 
         /*
          * Safety guard against malformed or truncated
@@ -1015,7 +1268,7 @@ export class ToolManager {
          * Existing files should not suddenly become a
          * small fragment of their previous contents.
          */
-        if (currentExists) {
+        if (currentExists && operation === "write") {
 
             const original =
                 proposal.originalContent;
@@ -1062,27 +1315,56 @@ export class ToolManager {
 
         /*
          * Create a backup immediately before applying the approved
-         * replacement. Keep the backup beside the original file so
-         * recovery does not depend on any additional service.
-         *
-         * The backup uses the original file path plus a timestamp,
-         * which prevents an earlier backup from being overwritten.
+         * change. Backups go to the extension's storage directory
+         * when one is configured (audit S5), so they never pollute
+         * the workspace or appear in the agent's own file listings.
+         * The timestamp in the name prevents overwriting an earlier
+         * backup of the same file.
          */
         if (currentExists) {
-            const backupPath =
-                `${proposal.path}.localforge-backup-${Date.now()}`;
+            const timestamp = Date.now();
 
-            await this.workspaceTools.writeFile(
-                backupPath,
-                currentContent
-            );
+            const backupName =
+                `${proposal.path.replace(/[\\/]+/g, "__")}.localforge-backup-${timestamp}`;
+
+            if (this.backupDirectory) {
+                const backupPath =
+                    path.join(
+                        this.backupDirectory,
+                        backupName
+                    );
+
+                await fs.mkdir(
+                    this.backupDirectory,
+                    { recursive: true }
+                );
+
+                await fs.writeFile(
+                    backupPath,
+                    currentContent,
+                    "utf8"
+                );
+            } else {
+                await this.workspaceTools.writeFile(
+                    `${proposal.path}.localforge-backup-${timestamp}`,
+                    currentContent
+                );
+            }
         }
 
-        await this.workspaceTools
-            .writeFile(
+        if (operation === "delete") {
+            await this.workspaceTools.deleteFile(proposal.path);
+        } else if (operation === "rename") {
+            await this.workspaceTools.renameFile(
+                proposal.path,
+                proposal.targetPath as string
+            );
+        } else {
+            await this.workspaceTools.writeFile(
                 proposal.path,
                 proposal.proposedContent
             );
+        }
 
 
         this.proposals.delete(
