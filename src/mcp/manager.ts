@@ -65,6 +65,13 @@ export class McpManager {
 
     private refreshPromise?: Promise<void>;
 
+    private lastStatuses: McpServerStatus[] = [];
+
+    /** Statuses from the most recent refresh (empty before it). */
+    get statuses(): McpServerStatus[] {
+        return this.lastStatuses;
+    }
+
     /** Read the configured start/call timeouts. */
     private timeouts(): {
         start: number;
@@ -184,6 +191,8 @@ export class McpManager {
                 }
             }
         }
+
+        this.lastStatuses = statuses;
 
         return statuses;
     }

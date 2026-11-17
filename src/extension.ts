@@ -11,7 +11,7 @@ import { AgentEngine } from "./agent/engine";
 import { LocalForgeDiffProvider } from "./agent/diff-provider";
 import { AIProviderManager } from "./providers/manager";
 import { ApiKeyStore } from "./providers/secrets";
-import { McpManager } from "./mcp/manager";
+import { McpManager, McpServerStatus } from "./mcp/manager";
 import { getChatHtml } from "./webview/chat";
 import {
     isChangedFileEntry,
@@ -221,7 +221,8 @@ export function activate(
             agent,
             toolManager,
             workspaceTools,
-            providerManager
+            providerManager,
+            mcpManager
         );
 
     const chatViewRegistration =
@@ -941,6 +942,8 @@ class LocalForgeChatViewProvider
 
     private readonly providerManager: AIProviderManager;
 
+    private readonly mcpManager?: McpManager;
+
     /** All persisted sessions, oldest update first (PRD FR-012). */
     private sessions: ChatSessionSnapshot[];
 
@@ -948,18 +951,22 @@ class LocalForgeChatViewProvider
 
     private activeRequest?: vscode.CancellationTokenSource;
 
+    private mcpConfigListener?: vscode.Disposable;
+
     constructor(
         context: vscode.ExtensionContext,
         agent: AgentEngine,
         toolManager: ToolManager,
         workspaceTools: WorkspaceTools,
-        providerManager: AIProviderManager
+        providerManager: AIProviderManager,
+        mcpManager?: McpManager
     ) {
         this.context = context;
         this.agent = agent;
         this.toolManager = toolManager;
         this.workspaceTools = workspaceTools;
         this.providerManager = providerManager;
+        this.mcpManager = mcpManager;
 
         /*
          * Load sessions (PRD FR-012). A workspace last used with an
@@ -1118,6 +1125,16 @@ class LocalForgeChatViewProvider
         });
     }
 
+    private postMcpStatus(
+        panel: vscode.WebviewPanel | vscode.WebviewView,
+        statuses: McpServerStatus[]
+    ): void {
+        panel.webview.postMessage({
+            type: "mcpStatus",
+            statuses
+        });
+    }
+
     resolveWebviewView(
         webviewView: vscode.WebviewView
     ): void {
@@ -1147,6 +1164,37 @@ class LocalForgeChatViewProvider
 
         panel.webview.html =
             getChatHtml(nonce, markdownScriptUri);
+
+        // Surface real MCP server status (PRD FR-020).
+        void this.mcpManager
+            ?.refreshShared()
+            .then(() => {
+                if (this.mcpManager) {
+                    this.postMcpStatus(panel, this.mcpManager.statuses);
+                }
+            })
+            .catch(() => undefined);
+
+        if (!this.mcpConfigListener) {
+            this.mcpConfigListener =
+                vscode.workspace.onDidChangeConfiguration(event => {
+                    if (
+                        event.affectsConfiguration("localforge.mcp") &&
+                        this.mcpManager
+                    ) {
+                        void this.mcpManager
+                            .refresh()
+                            .then(statuses => {
+                                this.postMcpStatus(panel, statuses);
+                            })
+                            .catch(() => undefined);
+                    }
+                });
+
+            this.context.subscriptions.push(
+                this.mcpConfigListener
+            );
+        }
 
     // =========================================================
     // WEBVIEW MESSAGES

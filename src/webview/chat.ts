@@ -875,6 +875,34 @@ export function getChatHtml(
         }
 
         /* =========================================
+           MCP STATUS (PRD FR-020)
+           ========================================= */
+
+        .mcp-status {
+            align-self: center;
+
+            padding: 2px 9px;
+
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--surface);
+
+            font-size: 10.5px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .mcp-status.ok {
+            color: var(--success);
+            border-color: rgba(69, 232, 121, 0.45);
+        }
+
+        .mcp-status.error {
+            color: var(--danger);
+            border-color: rgba(255, 86, 86, 0.45);
+        }
+
+        /* =========================================
            COMPOSER (PRD 7.7, FR-009/010)
            ========================================= */
 
@@ -1347,6 +1375,13 @@ export function getChatHtml(
                     API Key
                 </button>
 
+                <span
+                    id="mcp-status"
+                    class="mcp-status hidden"
+                    role="status"
+                >
+                </span>
+
             </div>
 
             <input
@@ -1624,6 +1659,7 @@ export function getChatHtml(
         const modelFilter = el("model-filter");
         const refreshModelsButton = el("refresh-models");
         const apiKeyButton = el("api-key-button");
+        const mcpStatusElement = el("mcp-status");
         const newChatButton = el("new-chat");
         const sessionsButton = el("sessions-button");
         const sessionsPanel = el("sessions-panel");
@@ -2865,6 +2901,45 @@ export function getChatHtml(
 
             if (message.type === "sessions") {
                 applySessions(message.sessions, message.activeSessionId);
+                return;
+            }
+
+            if (message.type === "mcpStatus") {
+                const statuses = Array.isArray(message.statuses) ? message.statuses : [];
+
+                if (statuses.length === 0) {
+                    mcpStatusElement.classList.add("hidden");
+                    return;
+                }
+
+                const connected = statuses.filter(status => status.connected);
+                const tools = connected.reduce(
+                    (sum, status) => sum + (status.toolCount || 0), 0
+                );
+
+                const failed = statuses.filter(status => status.enabled && !status.connected);
+
+                mcpStatusElement.classList.remove("hidden");
+
+                if (connected.length === 0) {
+                    mcpStatusElement.textContent = "MCP: offline";
+                    mcpStatusElement.className = "mcp-status error";
+                } else if (failed.length > 0) {
+                    mcpStatusElement.textContent = "MCP: " + tools + " tools (" + failed.length + " down)";
+                    mcpStatusElement.className = "mcp-status error";
+                } else {
+                    mcpStatusElement.textContent = "MCP: " + tools + " tools";
+                    mcpStatusElement.className = "mcp-status ok";
+                }
+
+                // Tooltip carries the real per-server detail.
+                mcpStatusElement.title = statuses.map(status =>
+                    status.name + ": " +
+                    (status.connected
+                        ? status.toolCount + " tool(s)"
+                        : "offline" + (status.error ? " — " + status.error : ""))
+                ).join("\n");
+
                 return;
             }
 
