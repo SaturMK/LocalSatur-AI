@@ -12,6 +12,11 @@ import { LocalForgeDiffProvider } from "./agent/diff-provider";
 import { AIProviderManager } from "./providers/manager";
 import { ApiKeyStore } from "./providers/secrets";
 import { getChatHtml } from "./webview/chat";
+import {
+    ChangedFileEntry,
+    isChangedFileEntry,
+    recordChangedFile
+} from "./agent/changed-files";
 
 interface ChatAttachment {
     name: string;
@@ -30,6 +35,9 @@ const CONVERSATION_STATE_KEY =
     "localforge.conversationHistory";
 
 const MAX_CONVERSATION_MESSAGES = 40;
+
+const CHANGED_FILES_STATE_KEY =
+    "localforge.changedFiles";
 
 function buildAttachmentContext(
     content: string,
@@ -910,6 +918,9 @@ class LocalForgeChatViewProvider
 
     private readonly conversationHistory: ChatMessage[];
 
+    /** Files changed through agent proposals in this session (PRD FR-011). */
+    private changedFiles: ChangedFileEntry[] = [];
+
     private activeRequest?: vscode.CancellationTokenSource;
 
     constructor(
@@ -942,6 +953,18 @@ class LocalForgeChatViewProvider
                             typeof message.content === "string"
                     )
                     .slice(-MAX_CONVERSATION_MESSAGES)
+                : [];
+
+        const savedChangedFiles =
+            context.workspaceState.get<unknown>(
+                CHANGED_FILES_STATE_KEY,
+                []
+            );
+
+        this.changedFiles =
+            Array.isArray(savedChangedFiles)
+                ? savedChangedFiles
+                    .filter(isChangedFileEntry)
                 : [];
     }
 
@@ -987,7 +1010,8 @@ class LocalForgeChatViewProvider
                     if (message?.type === "getConversation") {
                         panel.webview.postMessage({
                             type: "conversation",
-                            messages: this.conversationHistory
+                            messages: this.conversationHistory,
+                            changedFiles: this.changedFiles
                         });
                         return;
                     }
@@ -998,9 +1022,55 @@ class LocalForgeChatViewProvider
                             CONVERSATION_STATE_KEY,
                             []
                         );
+
+                        this.changedFiles = [];
+                        await this.context.workspaceState.update(
+                            CHANGED_FILES_STATE_KEY,
+                            []
+                        );
+
                         panel.webview.postMessage({
-                            type: "conversationCleared"
+                            type: "conversationCleared",
+                            changedFiles: this.changedFiles
                         });
+                        return;
+                    }
+
+                    if (message?.type === "revealFile") {
+                        const relativePath =
+                            typeof message.path === "string"
+                                ? message.path
+                                : "";
+
+                        if (relativePath) {
+                            try {
+                                const absolutePath =
+                                    await this.workspaceTools.getAbsolutePath(
+                                        relativePath
+                                    );
+
+                                const document =
+                                    await vscode.workspace.openTextDocument(
+                                        vscode.Uri.file(absolutePath)
+                                    );
+
+                                await vscode.window.showTextDocument(
+                                    document,
+                                    { preview: true }
+                                );
+                            } catch (error) {
+                                const messageText =
+                                    error instanceof Error
+                                        ? error.message
+                                        : String(error);
+
+                                panel.webview.postMessage({
+                                    type: "error",
+                                    message: `Could not open ${relativePath}: ${messageText}`
+                                });
+                            }
+                        }
+
                         return;
                     }
 
@@ -1687,6 +1757,41 @@ class LocalForgeChatViewProvider
                             await this.toolManager.applyProposal(
                                 proposalId
                             );
+
+                            // Track the change for the session (PRD FR-011).
+                            if (
+                                proposal.operation === "write" ||
+                                proposal.operation === "delete" ||
+                                proposal.operation === "rename"
+                            ) {
+                                const recordedOperation =
+                                    proposal.operation === "write"
+                                        ? "edit"
+                                        : proposal.operation;
+
+                                this.changedFiles = recordChangedFile(
+                                    this.changedFiles,
+                                    {
+                                        path: proposal.path,
+                                        targetPath:
+                                            proposal.operation === "rename"
+                                                ? proposal.targetPath as string
+                                                : undefined,
+                                        operation: recordedOperation,
+                                        timestamp: Date.now()
+                                    }
+                                );
+
+                                await this.context.workspaceState.update(
+                                    CHANGED_FILES_STATE_KEY,
+                                    this.changedFiles
+                                );
+
+                                panel.webview.postMessage({
+                                    type: "changedFiles",
+                                    changedFiles: this.changedFiles
+                                });
+                            }
 
                             panel.webview.postMessage({
                                 type:

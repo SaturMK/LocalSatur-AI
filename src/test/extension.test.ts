@@ -15,6 +15,7 @@ import { WorkspaceTools } from '../tools/workspace';
 import { VSCodeContextTools } from '../tools/vscode-context';
 import { renderMarkdown } from '../webview/markdown';
 import { extractPlan } from '../agent/plan';
+import { recordChangedFile, isChangedFileEntry } from '../agent/changed-files';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -255,6 +256,53 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(normalized.plan.steps[1].action, 'verify');
 	});
 
+	test('Changed-file tracking dedupes by current path and validates entries', async () => {
+				let list = recordChangedFile([], {
+			path: 'src/a.ts',
+			operation: 'edit',
+			timestamp: 1000
+		});
+
+		list = recordChangedFile(list, {
+			path: 'src/a.ts',
+			operation: 'edit',
+			timestamp: 2000
+		});
+
+		list = recordChangedFile(list, {
+			path: 'src/a.ts',
+			targetPath: 'src/b.ts',
+			operation: 'rename',
+			timestamp: 3000
+		});
+
+		// Repeated edits collapse; the rename is keyed by its target path.
+		assert.strictEqual(list.length, 1);
+		assert.strictEqual(list[0].operation, 'rename');
+		assert.strictEqual(list[0].targetPath, 'src/b.ts');
+
+		list = recordChangedFile(list, {
+			path: 'src/c.ts',
+			operation: 'create',
+			timestamp: 4000
+		});
+		assert.strictEqual(list.length, 2);
+
+		// A later edit of the renamed file replaces the rename entry.
+		list = recordChangedFile(list, {
+			path: 'src/b.ts',
+			operation: 'edit',
+			timestamp: 5000
+		});
+		assert.strictEqual(list.length, 2);
+		assert.ok(list.some(entry => entry.path === 'src/b.ts' && entry.operation === 'edit'));
+
+		assert.strictEqual(isChangedFileEntry({ path: 'x', operation: 'edit', timestamp: 1 }), true);
+		assert.strictEqual(isChangedFileEntry({ path: 'x', operation: 'bogus', timestamp: 1 }), false);
+		assert.strictEqual(isChangedFileEntry({ operation: 'edit', timestamp: 1 }), false);
+		assert.strictEqual(isChangedFileEntry(null), false);
+	});
+
 	test('OpenAI-compatible provider uses the configured output token limit', async () => {
 		const originalFetch = globalThis.fetch;
 		let requestBody: Record<string, unknown> | undefined;
@@ -483,5 +531,6 @@ suite('Extension Test Suite', () => {
 		}
 	});
 });
+
 
 

@@ -743,6 +743,80 @@ export function getChatHtml(
         }
 
         /* =========================================
+           CHANGED FILES (PRD FR-011)
+           ========================================= */
+
+        .changes-panel {
+            padding: var(--space-2) var(--space-4);
+
+            border-bottom: 1px solid var(--border);
+            background: var(--card);
+        }
+
+        .changes-panel-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: var(--space-1);
+        }
+
+        .changes-list {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .changes-row {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+
+            padding: 4px 2px;
+
+            border: 0;
+            border-radius: var(--radius-button);
+            background: transparent;
+
+            font-size: 12px;
+            text-align: left;
+        }
+
+        .changes-row:hover {
+            background: var(--surface);
+        }
+
+        .changes-op {
+            padding: 1px 7px;
+
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: var(--muted);
+        }
+
+        .changes-op.op-create { color: var(--success); border-color: rgba(69, 232, 121, 0.5); }
+        .changes-op.op-edit { color: var(--bright); border-color: rgba(21, 157, 255, 0.5); }
+        .changes-op.op-delete { color: var(--danger); border-color: rgba(255, 86, 86, 0.5); }
+
+        .changes-path {
+            flex: 1;
+
+            font-family: var(--mono);
+            font-size: 11.5px;
+            overflow-wrap: anywhere;
+        }
+
+        .changes-time {
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* =========================================
            COMPOSER (PRD 7.7, FR-009/010)
            ========================================= */
 
@@ -1055,6 +1129,17 @@ export function getChatHtml(
             </div>
 
             <button
+                id="changed-files-button"
+                class="icon hidden"
+                type="button"
+                title="Files changed in this session"
+                aria-expanded="false"
+                aria-controls="changed-files-panel"
+            >
+                Changes
+            </button>
+
+            <button
                 id="new-chat"
                 class="icon"
                 type="button"
@@ -1065,6 +1150,27 @@ export function getChatHtml(
             </button>
 
         </header>
+
+        <!-- =====================================
+             CHANGED FILES (PRD FR-011)
+             ===================================== -->
+
+        <div
+            id="changed-files-panel"
+            class="changes-panel hidden"
+        >
+
+            <div class="changes-panel-title">
+                Files changed this session
+            </div>
+
+            <div
+                id="changed-files-list"
+                class="changes-list"
+            >
+            </div>
+
+        </div>
 
         <!-- =====================================
              MODE NAVIGATION (PRD 7.1, FR-002)
@@ -1433,9 +1539,83 @@ export function getChatHtml(
         const refreshModelsButton = el("refresh-models");
         const apiKeyButton = el("api-key-button");
         const newChatButton = el("new-chat");
+        const changedFilesButton = el("changed-files-button");
+        const changedFilesPanel = el("changed-files-panel");
+        const changedFilesList = el("changed-files-list");
         const welcomeProviderButton = el("welcome-provider");
         const welcomeModelsButton = el("welcome-models");
         const modeTabs = Array.from(document.querySelectorAll(".mode-tab"));
+
+        // =========================================
+        // CHANGED FILES (PRD FR-011)
+        // =========================================
+
+        let changedFiles = [];
+
+        function formatChangedTime(timestamp) {
+            return new Date(timestamp).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit"
+            });
+        }
+
+        function renderChangedFiles() {
+            changedFilesList.innerHTML = "";
+
+            if (changedFiles.length === 0) {
+                changedFilesButton.classList.add("hidden");
+                changedFilesPanel.classList.add("hidden");
+                changedFilesButton.setAttribute("aria-expanded", "false");
+                return;
+            }
+
+            changedFilesButton.classList.remove("hidden");
+            changedFilesButton.textContent = "Changes (" + changedFiles.length + ")";
+
+            changedFiles.forEach(entry => {
+                const row = document.createElement("button");
+                row.type = "button";
+                row.className = "changes-row";
+                row.title = "Open " + (entry.operation === "rename" ? entry.targetPath : entry.path);
+
+                const op = document.createElement("span");
+                op.className = "changes-op op-" + entry.operation;
+                op.textContent = entry.operation;
+                row.appendChild(op);
+
+                const pathLabel = document.createElement("span");
+                pathLabel.className = "changes-path";
+                pathLabel.textContent =
+                    entry.operation === "rename"
+                        ? entry.path + " → " + entry.targetPath
+                        : entry.path;
+                row.appendChild(pathLabel);
+
+                const time = document.createElement("span");
+                time.className = "changes-time";
+                time.textContent = formatChangedTime(entry.timestamp);
+                row.appendChild(time);
+
+                row.addEventListener("click", () => {
+                    vscode.postMessage({
+                        type: "revealFile",
+                        path: entry.operation === "rename" ? entry.targetPath : entry.path
+                    });
+                });
+
+                changedFilesList.appendChild(row);
+            });
+        }
+
+        changedFilesButton.addEventListener("click", () => {
+            const hidden = changedFilesPanel.classList.toggle("hidden");
+            changedFilesButton.setAttribute("aria-expanded", String(!hidden));
+        });
+
+        function applyChangedFiles(list) {
+            changedFiles = Array.isArray(list) ? list : [];
+            renderChangedFiles();
+        }
 
         // =========================================
         // STATUS (PRD 5.1: real state, colour-coded)
@@ -2502,6 +2682,8 @@ export function getChatHtml(
                         addMessage(item.role, item.content);
                     }
                 });
+
+                applyChangedFiles(message.changedFiles);
                 return;
             }
 
@@ -2509,6 +2691,12 @@ export function getChatHtml(
                 messages.innerHTML = "";
                 addMessage("assistant", "LocalSatur AI is ready. Ask me to inspect, understand, modify, or verify your project.");
                 setStatus("Ready");
+                applyChangedFiles(message.changedFiles);
+                return;
+            }
+
+            if (message.type === "changedFiles") {
+                applyChangedFiles(message.changedFiles);
                 return;
             }
 
