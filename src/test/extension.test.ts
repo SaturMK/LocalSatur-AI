@@ -20,6 +20,7 @@ import { sanitizeSessions, sessionTitleFromMessage, summarizeSessions, MAX_SESSI
 import { McpClient } from '../mcp/client';
 import { mcpToolName, isMcpToolName } from '../mcp/manager';
 import { extractThinking, createThinkingFilter } from '../agent/thinking';
+import { parseOpencodeModels, buildOpencodePrompt } from '../providers/opencode-provider';
 import { AIProvider, AIChatOptions, AIChunkHandler, AIModel, AIResponse } from '../providers/types';
 import { ChatMessage } from '../ollama/client';
 
@@ -474,6 +475,35 @@ suite('Extension Test Suite', () => {
 		emitted += filter.flush().content;
 
 		assert.strictEqual(emitted, 'The real answer. Done. tail');
+	});
+
+	test('OpenCode CLI provider helpers parse models and build prompts', () => {
+		// Model listing: plain provider/model lines, junk ignored.
+		const parsed = parseOpencodeModels([
+			'opencode/glm-5.3-flash-free',
+			'',
+			'ollama/qwen3:8b-16k',
+			'not a model line',
+			'opencode/glm-5.3-flash-free',
+			'usage notes below'
+		].join('\n'));
+		assert.deepStrictEqual(parsed, ['ollama/qwen3:8b-16k', 'opencode/glm-5.3-flash-free']);
+
+		// Prompt serialization: roles labeled, tool history skipped.
+		const prompt = buildOpencodePrompt([
+			{ role: 'system', content: 'Be helpful.' },
+			{ role: 'user', content: 'hi' },
+			{ role: 'assistant', content: 'hello' },
+			{ role: 'tool', content: 'tool output' },
+			{ role: 'user', content: 'continue' }
+		] as never);
+
+		assert.ok(prompt.includes('[Instructions]\nBe helpful.'));
+		assert.ok(prompt.includes('[User]\nhi'));
+		assert.ok(prompt.includes('[Assistant]\nhello'));
+		assert.ok(!prompt.includes('tool output'));
+		assert.ok(prompt.includes('[User]\ncontinue'));
+		assert.ok(prompt.includes('Reply with the assistant'));
 	});
 
 	test('createThinkingFilter flushes plain held text and unclosed reasoning', () => {

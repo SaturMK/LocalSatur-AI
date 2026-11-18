@@ -140,10 +140,14 @@ export class AgentEngine {
             (await provider.getModels().catch(() => []))
                 .find(candidate => candidate.id === model);
 
+        const delegated =
+            provider.delegatedAgent === true;
+
         const modelSupportsTools =
             selectedModel?.capabilities?.includes("tools");
 
         const tools =
+            delegated ||
             modelSupportsTools === false
                 ? []
                 : await this.toolManager.getDefinitions(mode);
@@ -166,7 +170,8 @@ export class AgentEngine {
                 content:
                     this.getSystemPrompt(
                         mode,
-                        modelSupportsTools !== false
+                        modelSupportsTools !== false,
+                        delegated
                     )
             },
             ...recentHistory,
@@ -472,9 +477,14 @@ export class AgentEngine {
 
     private getSystemPrompt(
         mode: AgentMode,
-        toolsAvailable: boolean
+        toolsAvailable: boolean,
+        delegated = false
     ):
         string {
+        if (delegated) {
+            return `You are LocalSatur AI, a local-first AI coding assistant in Visual Studio Code, answering through the OpenCode CLI agent. The OpenCode agent has its own workspace tools and performs any inspection or file operations itself. Stay in ${mode} mode semantics, be concise and factual, and answer the user's request directly.`;
+        }
+
         if (!toolsAvailable) {
             return `You are LocalSatur AI in ${mode} mode, but the selected model does not support tool calls. Answer directly and do not claim to inspect, modify, or run anything in the workspace.`;
         }

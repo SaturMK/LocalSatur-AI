@@ -41,6 +41,14 @@ export interface AIProvider {
     readonly id: string;
     readonly name: string;
 
+    /**
+     * True when the provider delegates generation to an external
+     * agent CLI that has its own workspace tools (e.g. the
+     * OpenCode CLI). The engine then passes no tool definitions
+     * and uses a dedicated system prompt.
+     */
+    readonly delegatedAgent?: boolean;
+
     isAvailable(): Promise<boolean>;
 
     getModels(): Promise<AIModel[]>;

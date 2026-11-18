@@ -180,6 +180,21 @@
                     "type": "number",
                     "default": 60000,
                     "description": "Milliseconds to wait for a single MCP tool call before giving up."
+                },
+                "localforge.opencode.cliPath": {
+                    "type": "string",
+                    "default": "opencode",
+                    "description": "Path to the OpenCode CLI executable used by the OpenCode CLI provider."
+                },
+                "localforge.opencode.model": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Model for the OpenCode CLI provider in provider/model format (e.g. opencode/glm-5.3-flash-free). Leave empty to list models from 'opencode models'."
+                },
+                "localforge.opencode.timeoutSeconds": {
+                    "type": "number",
+                    "default": 300,
+                    "description": "Seconds to wait for an OpenCode CLI run before giving up."
                 },                "localforge.ollama.temperature": {
                     "type": "number",
                     "default": 0.2,

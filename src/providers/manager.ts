@@ -5,6 +5,10 @@ import {
 } from "./ollama-provider";
 
 import {
+    OpenCodeProvider
+} from "./opencode-provider";
+
+import {
     OpenAICompatibleProvider
 } from "./openai-compatible-provider";
 
@@ -29,6 +33,10 @@ export class AIProviderManager {
     ) {
         this.register(
             new OllamaProvider()
+        );
+
+        this.register(
+            new OpenCodeProvider()
         );
 
         this.registerConfiguredProviders();

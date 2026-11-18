@@ -2664,7 +2664,11 @@ export function getChatHtml(
             syncModeTabs();
             updateModelAvailability();
 
-            if (modeSelect.value === "agent" && !selectedModelSupportsTools) {
+            if (
+                modeSelect.value === "agent" &&
+                !selectedModelSupportsTools &&
+                !delegatedProvider
+            ) {
                 setStatus("Agent requires a tool-capable model");
                 return;
             }
@@ -2686,7 +2690,28 @@ export function getChatHtml(
 
         let selectedModelSupportsTools = false;
 
+        // Delegated CLI providers (e.g. OpenCode) run their own
+        // agent with their own tools, so extension-side tool
+        // capability does not apply.
+        let delegatedProvider = false;
+
+        function agentStatusSuffix() {
+            if (delegatedProvider) {
+                return "Agent ready (delegated to the provider's own agent)";
+            }
+
+            return selectedModelSupportsTools === false
+                ? "Agent mode active; this model cannot use workspace tools"
+                : selectedModelSupportsTools === true
+                    ? "Agent ready"
+                    : "Agent ready; tool support unverified";
+        }
+
         function modelOptionLabel(model) {
+            if (delegatedProvider) {
+                return model?.name ?? String(model);
+            }
+
             const supportsTools = model?.supportsTools;
 
             return supportsTools === true
@@ -2772,11 +2797,7 @@ export function getChatHtml(
 
             setStatus(
                 modeSelect.value === "agent"
-                    ? selectedModelSupportsTools === false
-                        ? "Agent mode active; this model cannot use workspace tools"
-                        : selectedModelSupportsTools === true
-                            ? "Agent ready"
-                            : "Agent ready; tool support unverified"
+                    ? agentStatusSuffix()
                     : modeSelect.value === "plan"
                         ? "Plan ready"
                         : "Ask ready"
@@ -2784,22 +2805,16 @@ export function getChatHtml(
         }
 
         function updateModelAvailability() {
-            if (!Array.isArray(availableModels) || availableModels.length === 0) {
-                return;
+            if (Array.isArray(availableModels) && availableModels.length > 0) {
+                const selectedName = modelSelect.value;
+                const selectedDetails = availableModels.find(model => model.name === selectedName);
+
+                selectedModelSupportsTools = selectedDetails?.supportsTools;
             }
-
-            const selectedName = modelSelect.value;
-            const selectedDetails = availableModels.find(model => model.name === selectedName);
-
-            selectedModelSupportsTools = selectedDetails?.supportsTools;
 
             setStatus(
                 modeSelect.value === "agent"
-                    ? selectedModelSupportsTools === false
-                        ? "Agent mode active; this model cannot use workspace tools"
-                        : selectedModelSupportsTools === true
-                            ? "Agent ready"
-                            : "Agent ready; tool support unverified"
+                    ? agentStatusSuffix()
                     : modeSelect.value === "plan"
                         ? "Plan ready"
                         : "Ask ready"
@@ -3103,6 +3118,7 @@ export function getChatHtml(
             }
 
             if (message.type === "models") {
+                delegatedProvider = message.provider === "opencode";
                 populateModels(message.models, message.selectedModel);
                 return;
             }
@@ -3120,7 +3136,7 @@ export function getChatHtml(
                 setStatus(
                     modeSelect.value !== "agent"
                         ? modeSelect.value + " - " + message.model
-                        : selectedModelSupportsTools
+                        : delegatedProvider || selectedModelSupportsTools
                             ? "Agent - " + message.model
                             : "Chat only - " + message.model
                 );
